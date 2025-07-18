@@ -1,0 +1,9 @@
+csai_processor/
+
+.env/
+
+.envrc
+*.pyc
+__pycache__/
+
+venv_activate_3.12.10.txt
