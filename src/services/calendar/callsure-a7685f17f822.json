@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "callsure",
+  "private_key_id": "a7685f17f8226b48d7e9d1c16d94761b1b902343",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC/CGVxdG5QgKgP\nhZ1w/7G3C7moSpSiOapCZY8cFbhvSU4+/NsEomCCXqpaYED4wD+j2YXBiNkg1a+r\nbTdrxL2WzRaTW/w+PMKK8cRBhBy1a0Mtk8RmGoBLcXXWb5Yp98YU2kwjROpbJQhg\nIvwDzjrLA49EUy6LqcPKGgevXc1lA8Cw+mZElRtJSUWPkXUwrfSy1JDmXQoJcLHP\nPz6vbTouFNnNf8s9HLq4zbSdIFG/7zz11eP+p5ts+0UYelTcgElDxS1ZPeBfCHw3\nCvrgnDDX3cDHm7DNHUQYfjmFKl9MVskkfshk4VBwpvebN1hATcSj5FN6O/9KAB52\nn34HnW+DAgMBAAECggEAHSScxTgr9CAMg4GwySJY7EHfqurlzfHaJZL0yCYQIvod\n88IDb6uN6ZWji3IPt2Ms0kRHAYVtCnNO/2oEAG7dNXpILWblDmGalDPZ6tzKvGqG\nrxdR6Pm2BMxkW7heQjzIfTnoT6Ed15XIt1He/H2jvoDmhFfkS+40LkrWTUyUHwq1\nVLya2MVWdRMt7vSJofFsAKkRhApfTsBgUOzt1KjcutD201S9+MVzaJnhJTE8HzQd\nCsryGuexFvMl4QRWpvQ9gJy/wjIQlK+cELMiN5VsA3qPex48Y+SAiiUOh+u1r7X2\nNsrFK/9WSdN4I/oEE8J9Zkh7lvlT1Y4jcvR2uRugwQKBgQD/usUH/MJ8D9MT529L\nk8XVAx/y+ERcc+1QjC7cwlAuuVIaFQGNBrs+j32XQ7Gi9ph7B3KZ31ICU7swIKKi\nm0nmCS+H7o9u6MMbcdmLTDQx4L4iv8e8ph9hKZOwKIQw6GNZXUZ1qNGpoBgUTBW8\njD7k9Wvuo4UhLhHkqziZIvyL0QKBgQC/PByyE5Vk78eKjebYlgR+4lM15Mdskchv\nafOveBSPOnCrBjCtZv59skRx+PFJU+hkp3ZD+yJJF4DKWcBAIA57r324suRzPDGX\ndHR/b7+6uu/QRquPucnloX8hotorb2E7urMTNtmrMGD0BJCujfFzC3iaHH2K68ss\nF+mKKNTfEwKBgQDZgkQfvQ62csc3wLta7v9vZE8CW8PZVwjcX79kKSoF874vTPqa\ntsUAOw+5XuxyDYg37Ge/FMEuFYW7M6bg43ABZoK0/WWmEfgRGc7Mui4S1nMiHziF\n7k32WGSzimKVLrOByOIrJUHfIroYWXaLfkXofA4nVZHgXMz/T9q99ZIUYQKBgEXq\n2278G/3YcPMmaIU9bA1cACJPL95w+oBJk4/O7m1jZ3gP/lIXuuoH+GBXLRirNec/\nFs1KD0H79tmEsPaBAeqUwfl6Zm3/Tv5Z1JIXMFk8KZvTirw0qC1tu0Z3/R4uTbWB\n0CExR6oAOSJeXOuE+Acg5Yoq6neVOCY54+fgf9vDAoGBAJQh5JZZzI9KCKOEzpZ/\ndwgm4jkAIQJ/qAtbGlCYdJOMqohH4BfABHBasxYOMyP4EWUlfNspRf14XtGw2IsM\njSMDkwS5H4giSo6jgv+sL+srRGyqyOLTC2H7PWOMyH2WVvlYjuG5P8SyjfBDBRtL\nBhKksXK1ErgZMSCuj1TklLIt\n-----END PRIVATE KEY-----\n",
+  "client_email": "calendar-service-account@callsure.iam.gserviceaccount.com",
+  "client_id": "106790406818872516102",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/calendar-service-account%40callsure.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

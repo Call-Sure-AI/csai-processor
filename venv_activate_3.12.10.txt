@@ -1,0 +1,3 @@
+Venv Installation: py -3.12 -m venv myvenv
+PS D:\csai-processor> Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+PS D:\csai-processor> .\csai_processor\Scripts\Activate.ps1
