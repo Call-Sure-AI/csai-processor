@@ -1,0 +1,112 @@
+# FastAPI and ASGI server
+fastapi
+uvicorn[standard]
+
+# AWS S3 integration
+boto3
+aioboto3
+
+# Database
+psycopg2-binary
+asyncpg
+
+# Pinecone for vector databases
+pinecone-client
+
+# OpenAI GPT API and LLM utilities
+openai
+transformers
+
+# Fine-tuning and dataset handling
+peft
+# datasets
+bitsandbytes
+
+# Environment variable management
+python-dotenv
+
+# Logging and Observability
+loguru
+opentelemetry-api
+opentelemetry-sdk
+
+# Async HTTP requests
+httpx
+aiohttp
+
+# Testing and Mocking
+pytest
+pytest-asyncio
+pytest-mock
+
+# Authentication and Security
+pyjwt
+
+# Redis Caching and Rate Limiting
+redis
+
+# Token Handling for OpenAI
+tiktoken
+
+# Development Tools
+black
+isort
+flake8
+
+# WebRTC and Real-time Communication
+# aiortc
+websockets
+# av
+cryptography
+pyee
+aiodns
+python-multipart
+google-crc32c
+
+# Optional WebRTC Media Extensions
+# numpy
+opencv-python-headless
+sounddevice
+
+pandas
+SQLAlchemy
+python-magic
+# textract
+beautifulsoup4
+aiofiles
+
+qdrant-client
+
+langchain-openai
+langchain-community
+langchain
+langchain-core
+langchain-qdrant
+PyPDF2
+
+pydub
+
+Pillow
+twilio
+
+#audiooop
+
+chromadb
+
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+google-api-python-client>=2.0.0
+O365>=2.0.0
+tenacity>=8.0.0
+pytz>=2024.1
+
+anthropic
+#=======
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+O365
+tenacity
+pytz
