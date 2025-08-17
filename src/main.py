@@ -18,6 +18,8 @@ if __name__ == "__main__":
         "app:app",
         host=settings.host,
         port=settings.port,
-        reload=settings.debug,
-        workers=settings.workers
+        reload=True,  # Always enable reload for development
+        workers=1,    # Use 1 worker when reload is enabled
+        reload_dirs=["src"],  # Watch the src directory for changes
+        reload_excludes=["*.pyc", "__pycache__", "*.log"]
     )

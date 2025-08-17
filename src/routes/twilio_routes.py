@@ -117,7 +117,20 @@ async def create_outbound_call(
             raise HTTPException(status_code=400, detail="Missing required parameters")
         
         # Create webhook URL for call handling
-        base_url = f"https://{request.headers.get('host')}"
+        # Allow override via environment variable for ngrok/production
+        webhook_base_url = data.get("webhook_base_url") or settings.webhook_base_url
+        
+        if webhook_base_url:
+            # Use provided webhook base URL (for ngrok or production)
+            base_url = webhook_base_url.rstrip('/')
+        else:
+            # Use http for localhost, https for production
+            host = request.headers.get('host')
+            if 'localhost' in host or '127.0.0.1' in host:
+                base_url = f"http://{host}"
+            else:
+                base_url = f"https://{host}"
+            
         webhook_url = f"{base_url}/api/v1/twilio/incoming-call?company_key={company_api_key}&agent_id={agent_id}"
         status_callback_url = f"{base_url}/api/v1/twilio/call-status"
         

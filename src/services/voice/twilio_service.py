@@ -63,7 +63,7 @@ class TwilioVoiceService:
                 'status_callback': status_callback_url,
                 'status_callback_method': 'POST',
                 'status_callback_event': ['initiated', 'ringing', 'answered', 'completed'],
-                **kwargs
+                # **kwargs
             }
             
             call = self.client.calls.create(**call_params)
@@ -73,9 +73,9 @@ class TwilioVoiceService:
                 'status': call.status,
                 'direction': call.direction,
                 'to': call.to,
-                'from': call.from_,
+                'from': getattr(call, 'from_', getattr(call, 'from_number', from_number)),
                 'created_at': datetime.utcnow(),
-                'metadata': kwargs.get('metadata', {})
+                # 'metadata': kwargs.get('metadata', {})
             }
             
             self.active_calls[call.sid] = call_data

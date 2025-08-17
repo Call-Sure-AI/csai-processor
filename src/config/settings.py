@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     twilio_max_call_duration: int = Field(default=3600, env="TWILIO_MAX_CALL_DURATION")  # 1 hour
     twilio_enable_recording: bool = Field(default=False, env="TWILIO_ENABLE_RECORDING")
     twilio_recording_status_callback: Optional[str] = Field(default=None, env="TWILIO_RECORDING_STATUS_CALLBACK")
+    webhook_base_url: Optional[str] = Field(default=None, env="WEBHOOK_BASE_URL")
     
     # Call Management
     call_cleanup_interval: int = Field(default=3600, env="CALL_CLEANUP_INTERVAL")  # 1 hour
