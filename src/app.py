@@ -14,10 +14,13 @@ from database.models import Base
 from managers.conversation_manager import ConversationManager
 from managers.agent_manager import AgentManager
 from managers.connection_manager import ConnectionManager
+from managers.webrtc_manager import WebRTCManager
 from processors.message_processor import MessageProcessor, StreamingMessageProcessor
 from workers.background_worker import BackgroundWorker
 from services.vector_store.qdrant_service import QdrantService
 from services.rag.rag_service import RAGService
+from routes.webrtc_routes import router as webrtc_router, initialize_webrtc_services
+from routes.twilio_routes import router as twilio_router
 
 
 # Configure logging
@@ -33,6 +36,7 @@ connection_manager: ConnectionManager = None
 background_worker: BackgroundWorker = None
 conversation_manager: ConversationManager = None
 agent_manager: AgentManager = None
+webrtc_manager: WebRTCManager = None
 vector_store: QdrantService = None
 rag_service: RAGService = None
 message_processor: MessageProcessor = None
@@ -83,6 +87,12 @@ def create_app() -> FastAPI:
             "timestamp": asyncio.get_event_loop().time()
         }
 
+    # Include WebRTC routes
+    app.include_router(webrtc_router, prefix="/api/v1/webrtc", tags=["WebRTC"])
+    
+    # Include Twilio routes
+    app.include_router(twilio_router, prefix="/api/v1/twilio", tags=["Twilio Voice"])
+    
     # WebSocket endpoint
     @app.websocket("/ws/{client_id}")
     async def websocket_endpoint(websocket: WebSocket, client_id: str):
@@ -109,7 +119,7 @@ def create_app() -> FastAPI:
 
 async def startup_event():
     """Initialize application on startup"""
-    global connection_manager, background_worker, conversation_manager, agent_manager, vector_store, rag_service, message_processor
+    global connection_manager, background_worker, conversation_manager, agent_manager, webrtc_manager, vector_store, rag_service, message_processor
     
     try:
         logger.info("Starting CSAI Processor...")
@@ -158,9 +168,19 @@ async def startup_event():
             agent_manager=agent_manager,
             vector_store=vector_store,
             rag_service=rag_service,
-            message_processor=message_processor
+            message_processor=message_processor,
+            conversation_manager=conversation_manager
         )
         logger.info("Connection manager initialized")
+
+        # Initialize WebRTC manager
+        webrtc_manager = WebRTCManager()
+        webrtc_manager.initialize_services(db_session, vector_store)
+        logger.info("WebRTC manager initialized")
+
+        # Initialize WebRTC services in routes
+        initialize_webrtc_services(webrtc_manager, vector_store, connection_manager)
+        logger.info("WebRTC services initialized")
 
         logger.info("CSAI Processor startup complete")
 
@@ -183,6 +203,11 @@ async def shutdown_event():
         if connection_manager:
             await connection_manager.close_all_connections()
             logger.info("All connections closed")
+        
+        # Close WebRTC connections
+        if webrtc_manager:
+            await webrtc_manager.close_all_connections()
+            logger.info("All WebRTC connections closed")
         
         # Close database connections
         close_database()

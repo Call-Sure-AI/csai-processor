@@ -1,25 +1,24 @@
 # models/models.py
-from sqlalchemy import Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Enum, Table, LargeBinary
+from sqlalchemy import Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Table, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from datetime import datetime
-import enum
 import uuid
 from enum import Enum
-from sqlalchemy import Column, String, Text, DateTime, Enum as SQLEnum, ForeignKey, Boolean, Integer
+from sqlalchemy import Enum as SQLEnum
 
 Base = declarative_base()
 
-class AgentType(str, enum.Enum):
+class AgentType(str, Enum):
     base = "base"
     sales = "sales"
     support = "support"
     technical = "technical"
     custom = "custom"
 
-class DocumentType(str, enum.Enum):
+class DocumentType(str, Enum):
     faq = "faq"
     product = "product"
     policy = "policy"
@@ -28,7 +27,7 @@ class DocumentType(str, enum.Enum):
     image = "image"  # New type for images
 
 
-class DatabaseIntegrationType(str, enum.Enum):
+class DatabaseIntegrationType(str, Enum):
     POSTGRESQL = "postgresql"
     MYSQL = "mysql"
     MSSQL = "mssql"
@@ -133,7 +132,7 @@ class Ticket(Base):
     
     # Metadata
     tags = Column(ARRAY(String), default=[])
-    metadata = Column(JSONB, default={})
+    ticket_metadata = Column(JSONB, default={})
     
     # Auto-resolution tracking
     auto_resolved = Column(Boolean, default=False)
@@ -172,7 +171,7 @@ class DatabaseIntegration(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     company_id = Column(String, ForeignKey('Company.id'))
     name = Column(String(255), nullable=False)
-    type = Column(Enum(DatabaseIntegrationType), nullable=False)
+    type = Column(SQLEnum(DatabaseIntegrationType), nullable=False)
     
     # Connection Details (encrypted)
     connection_details = Column(JSONB, nullable=False)
@@ -202,7 +201,7 @@ class Document(Base):
     agent_id = Column(String, ForeignKey('Agent.id'))
     
     name = Column(String(255), nullable=False)
-    type = Column(Enum(DocumentType), nullable=False)
+    type = Column(SQLEnum(DocumentType), nullable=False)
     content = Column(Text, nullable=False)
     
     # File Metadata
@@ -244,7 +243,7 @@ class Agent(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, nullable=False)
     name = Column(String(255), nullable=False)
-    type = Column(Enum(AgentType), nullable=False)
+    type = Column(SQLEnum(AgentType), nullable=False)
     company_id = Column(String, ForeignKey('Company.id'))
     
     files = Column(ARRAY(String), default=[])

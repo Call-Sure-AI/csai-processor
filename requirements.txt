@@ -55,6 +55,7 @@ pyjwt>=2.8.0
 
 # Redis Caching and Rate Limiting
 redis>=5.0.0
+valkey>=0.1.0
 
 # Token Handling for OpenAI
 tiktoken>=0.5.0
@@ -111,3 +112,9 @@ anthropic>=0.7.0
 # av>=10.0.0
 # opencv-python-headless>=4.8.0
 # sounddevice>=0.4.6
+
+# Speech Processing
+deepgram-sdk>=2.12.0
+
+# Twilio
+twilio>=8.10.0

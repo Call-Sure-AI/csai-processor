@@ -19,7 +19,8 @@ from core.interfaces import (
     IVectorStore, 
     IRAGService, 
     ILogger,
-    IMessageProcessor
+    IMessageProcessor,
+    IConversationManager
 )
 from config.settings import settings
 
@@ -46,6 +47,7 @@ class ConnectionManager(IConnectionManager):
         vector_store: IVectorStore,
         rag_service: IRAGService,
         message_processor: IMessageProcessor,
+        conversation_manager: Optional[IConversationManager] = None,
         logger: Optional[ILogger] = None
     ):
         self.db = db_session
@@ -53,6 +55,7 @@ class ConnectionManager(IConnectionManager):
         self.vector_store = vector_store
         self.rag_service = rag_service
         self.message_processor = message_processor
+        self.conversation_manager = conversation_manager
         self.logger = logger or logging.getLogger(__name__)
         
         # WebSocket management
@@ -535,3 +538,27 @@ class ConnectionManager(IConnectionManager):
         except Exception as e:
             self.logger.error(f"Error getting connection stats: {str(e)}")
             return {}
+
+    async def process_audio_transcript(self, client_id: str, transcript: str):
+        """Process audio transcript from WebRTC"""
+        try:
+            if not transcript or not transcript.strip():
+                return
+            
+            self.logger.info(f"Processing audio transcript for {client_id}: {transcript[:100]}...")
+            
+            # Create message data structure
+            message_data = {
+                "type": "message",
+                "content": transcript,
+                "role": "user",
+                "timestamp": datetime.utcnow().isoformat(),
+                "source": "audio"
+            }
+            
+            # Process the transcript as a regular message
+            await self.process_message(client_id, message_data)
+            
+        except Exception as e:
+            self.logger.error(f"Error processing audio transcript for {client_id}: {str(e)}")
+            await self.handle_error(client_id, f"Error processing audio: {str(e)}")

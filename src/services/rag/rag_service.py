@@ -18,9 +18,9 @@ class RAGService:
         
         # Initialize OpenAI LLM
         self.llm = ChatOpenAI(
-            model_name=settings.OPENAI_MODEL,
+            model_name=settings.openai_model,
             temperature=0.1,
-            openai_api_key=settings.OPENAI_API_KEY
+            openai_api_key=settings.openai_api_key
         )
         
         # Custom QA prompt template

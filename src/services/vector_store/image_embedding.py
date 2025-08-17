@@ -18,10 +18,10 @@ class ImageEmbeddingService:
         self.qdrant_service = qdrant_service
         self.embeddings = OpenAIEmbeddings(
             model="text-embedding-3-small",
-            openai_api_key=settings.OPENAI_API_KEY
+            openai_api_key=settings.openai_api_key
         )
         
-        self.openai_api_key = settings.OPENAI_API_KEY
+        self.openai_api_key = settings.openai_api_key
     
     async def get_image_description(self, image_content: bytes) -> str:
         """Get image description using OpenAI's Vision API"""

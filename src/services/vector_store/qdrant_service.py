@@ -14,13 +14,13 @@ class QdrantService:
         """Initialize Qdrant service with necessary components"""
         self.embeddings = OpenAIEmbeddings(
             model="text-embedding-3-small",
-            openai_api_key=settings.OPENAI_API_KEY,
+            openai_api_key=settings.openai_api_key,
             client=None
         )
         
         self.qdrant_client = QdrantClient(
-            url=f"https://{settings.QDRANT_HOST}:{settings.QDRANT_PORT}",
-            api_key=settings.QDRANT_API_KEY,
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
             timeout=30  # Added timeout for better reliability
         )
         
@@ -77,8 +77,8 @@ class QdrantService:
             vector_store = QdrantVectorStore.from_existing_collection(
                 embedding=self.embeddings,
                 collection_name=collection_name,
-                url=f"https://{settings.QDRANT_HOST}:{settings.QDRANT_PORT}",
-                api_key=settings.QDRANT_API_KEY,
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key,
                 content_payload_key="page_content",
                 metadata_payload_key="metadata"
             )
