@@ -58,13 +58,16 @@ class TwilioVoiceService:
         try:
             call_params = {
                 'to': to_number,
-                'from_': from_number or settings.twilio_phone_number,
+                'from_': from_number if from_number else settings.twilio_phone_number,
                 'url': webhook_url,
                 'status_callback': status_callback_url,
                 'status_callback_method': 'POST',
                 'status_callback_event': ['initiated', 'ringing', 'answered', 'completed'],
-                # **kwargs
             }
+            
+            # Add any additional kwargs
+            if kwargs:
+                call_params.update(kwargs)
             
             call = self.client.calls.create(**call_params)
             

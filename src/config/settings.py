@@ -2,7 +2,7 @@
 Configuration settings for CSAI Processor
 """
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from functools import lru_cache
@@ -107,7 +107,8 @@ class Settings(BaseSettings):
     twilio_max_call_duration: int = Field(default=3600, env="TWILIO_MAX_CALL_DURATION")  # 1 hour
     twilio_enable_recording: bool = Field(default=False, env="TWILIO_ENABLE_RECORDING")
     twilio_recording_status_callback: Optional[str] = Field(default=None, env="TWILIO_RECORDING_STATUS_CALLBACK")
-    webhook_base_url: Optional[str] = Field(default=None, env="WEBHOOK_BASE_URL")
+    webhook_base_url: Optional[str] = Field(default="http://localhost:8001", env="WEBHOOK_BASE_URL")
+    base_url: Optional[str] = Field(default="http://localhost:8001", env="BASE_URL")
     
     # Call Management
     call_cleanup_interval: int = Field(default=3600, env="CALL_CLEANUP_INTERVAL")  # 1 hour
@@ -128,6 +129,37 @@ class Settings(BaseSettings):
     
     # Scheduler
     scheduler_interval_minutes: int = Field(default=2, env="SCHEDULER_INTERVAL_MINUTES")
+    
+    # Celery Configuration
+    celery_broker_url: str = Field(default="redis://localhost:6379/0", env="CELERY_BROKER_URL")
+    celery_result_backend: str = Field(default="redis://localhost:6379/0", env="CELERY_RESULT_BACKEND")
+    celery_task_serializer: str = Field(default="json", env="CELERY_TASK_SERIALIZER")
+    celery_result_serializer: str = Field(default="json", env="CELERY_RESULT_SERIALIZER")
+    celery_accept_content: List[str] = Field(default=["json"], env="CELERY_ACCEPT_CONTENT")
+    celery_timezone: str = Field(default="Asia/Kolkata", env="CELERY_TIMEZONE")  # Use local timezone
+    celery_enable_utc: bool = Field(default=False, env="CELERY_ENABLE_UTC")  # Use local time
+    celery_task_track_started: bool = Field(default=True, env="CELERY_TASK_TRACK_STARTED")
+    celery_task_time_limit: int = Field(default=30 * 60, env="CELERY_TASK_TIME_LIMIT")  # 30 minutes
+    celery_task_soft_time_limit: int = Field(default=25 * 60, env="CELERY_TASK_SOFT_TIME_LIMIT")  # 25 minutes
+    celery_worker_prefetch_multiplier: int = Field(default=1, env="CELERY_WORKER_PREFETCH_MULTIPLIER")
+    celery_worker_max_tasks_per_child: int = Field(default=1000, env="CELERY_WORKER_MAX_TASKS_PER_CHILD")
+    celery_worker_concurrency: int = Field(default=4, env="CELERY_WORKER_CONCURRENCY")
+    celery_worker_disable_rate_limits: bool = Field(default=False, env="CELERY_WORKER_DISABLE_RATE_LIMITS")
+    celery_task_always_eager: bool = Field(default=False, env="CELERY_TASK_ALWAYS_EAGER")  # For testing
+    celery_task_eager_propagates: bool = Field(default=True, env="CELERY_TASK_EAGER_PROPAGATES")
+    celery_task_ignore_result: bool = Field(default=False, env="CELERY_TASK_IGNORE_RESULT")
+    celery_task_store_errors_even_if_ignored: bool = Field(default=True, env="CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED")
+    celery_task_acks_late: bool = Field(default=True, env="CELERY_TASK_ACKS_LATE")
+    celery_task_reject_on_worker_lost: bool = Field(default=True, env="CELERY_TASK_REJECT_ON_WORKER_LOST")
+    celery_task_retry_policy: Dict[str, Any] = Field(
+        default={
+            "max_retries": 3,
+            "interval_start": 0,
+            "interval_step": 0.2,
+            "interval_max": 0.2,
+        },
+        env="CELERY_TASK_RETRY_POLICY"
+    )
     
     class Config:
         env_file = ".env"

@@ -21,6 +21,8 @@ from services.vector_store.qdrant_service import QdrantService
 from services.rag.rag_service import RAGService
 from routes.webrtc_routes import router as webrtc_router, initialize_webrtc_services
 from routes.twilio_routes import router as twilio_router
+from routes.celery_twilio_routes import router as celery_twilio_router
+from routes.twilio_webhook_routes import router as twilio_webhook_router
 
 
 # Configure logging
@@ -92,6 +94,12 @@ def create_app() -> FastAPI:
     
     # Include Twilio routes
     app.include_router(twilio_router, prefix="/api/v1/twilio", tags=["Twilio Voice"])
+    
+    # Include Celery Twilio routes
+    app.include_router(celery_twilio_router, prefix="/api/v1/celery/twilio", tags=["Celery Twilio Calls"])
+    
+    # Include Twilio Webhook routes
+    app.include_router(twilio_webhook_router, prefix="/api/v1/twilio/webhook", tags=["Twilio Webhooks"])
     
     # WebSocket endpoint
     @app.websocket("/ws/{client_id}")

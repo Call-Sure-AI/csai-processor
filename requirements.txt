@@ -118,3 +118,7 @@ deepgram-sdk>=2.12.0
 
 # Twilio
 twilio>=8.10.0
+
+# Celery for task queuing
+celery>=5.3.0
+flower>=2.0.0
