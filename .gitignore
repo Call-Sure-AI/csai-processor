@@ -1,6 +1,5 @@
-<<<<<<< HEAD
 # Byte-compiled / optimized / DLL files
-__pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 
@@ -100,7 +99,7 @@ celerybeat.pid
 .env
 .venv
 env/
-venv/
+venv*/
 .csai_processor
 csai_processor/
 ENV/
@@ -134,14 +133,12 @@ app.db
 .idea/
 *.swp
 *.swo
-=======
 csai_processor/
 
 .env/
 
 .envrc
 *.pyc
-__pycache__/
 
 venv_activate_3.12.10.txt
->>>>>>> 04489da27a47a436fd2d6b5df51fd79865c0a31e
+
