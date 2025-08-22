@@ -2,12 +2,23 @@
 Twilio Webhook Routes for Call Handling
 """
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, Request, Form, HTTPException
+from fastapi import APIRouter, Request, Form, HTTPException, WebSocket
 from fastapi.responses import Response
 from loguru import logger
 from datetime import datetime
 
+from services.speech.realtime_stream_service import RealTimeSTTHandler
+from services.speech.media_stream_service import TwilioMediaStreamHandler
+from services.voice.twilio_service import twilio_service
+from services.speech.conversation_manager_service import conversation_manager
+from services.speech.tts_service import RealTimeTTSHandler
+
 from config.settings import settings
+
+
+import hmac
+import hashlib
+import base64
 
 router = APIRouter()
 
@@ -41,216 +52,151 @@ def generate_twiml_response(
     if gather_input:
         # Create TwiML with Gather for user input
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Gather timeout="{gather_timeout}" numDigits="{gather_num_digits}" action="{action_url or ''}" method="{method}">
-        <Say voice="{voice}" language="{language}">{message}</Say>
-    </Gather>
-    <Say voice="{voice}" language="{language}">We didn't receive any input. Goodbye!</Say>
-</Response>"""
+            <Response>
+                <Gather timeout="{gather_timeout}" numDigits="{gather_num_digits}" action="{action_url or ''}" method="{method}">
+                    <Say voice="{voice}" language="{language}">{message}</Say>
+                </Gather>
+                <Say voice="{voice}" language="{language}">We didn't receive any input. Goodbye!</Say>
+            </Response>"""
     else:
         # Simple TwiML with just speech
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="{voice}" language="{language}">{message}</Say>
-</Response>"""
+            <Response>
+                <Say voice="{voice}" language="{language}">{message}</Say>
+            </Response>"""
     
     return twiml
 
-@router.post("/incoming-call")
-async def handle_incoming_call(
-    request: Request,
-    CallSid: str = Form(...),
-    From: str = Form(...),
-    To: str = Form(...),
-    CallStatus: str = Form(...),
-    Direction: str = Form(...),
-    message: Optional[str] = Form(None),
-    voice: Optional[str] = Form("alice"),
-    language: Optional[str] = Form("en-US"),
-    gather_input: Optional[bool] = Form(False)
-):
-    """
-    Handle incoming call webhook from Twilio
+class TwilioWebhookHandler:
+    """Handles Twilio webhooks for call events"""
     
-    This endpoint receives webhook calls from Twilio when a call is initiated
-    and returns TwiML instructions for what the call should do.
-    """
-    try:
-        # Log the incoming call
-        logger.info(f"Incoming call from {From} to {To} (SID: {CallSid})")
-        logger.info(f"Call status: {CallStatus}, Direction: {Direction}")
+    def __init__(self, twilio_service, conversation_manager):
+        self.twilio_service = twilio_service
+        self.conversation_manager = conversation_manager
         
-        # Get query parameters from URL
-        query_params = dict(request.query_params)
-        logger.info(f"Query parameters: {query_params}")
+    async def handle_incoming_call(self, request: Request) -> Response:
+        """Handle incoming call webhook"""
+        form_data = await request.form()
         
-        # Get custom message from query params, form data, or use default
-        base_message = (
-            query_params.get('message') or 
-            message or 
-            "Hello! This is a test call from your Celery Twilio service. Thank you for testing our call queuing system!"
+        # Validate webhook signature
+        if not self._validate_signature(request, form_data):
+            raise HTTPException(status_code=403, detail="Invalid signature")
+            
+        call_sid = form_data.get("CallSid")
+        from_number = form_data.get("From")
+        to_number = form_data.get("To")
+        
+        # Generate TwiML response for WebRTC streaming
+        twiml = await self.twilio_service.handle_incoming_call(
+            call_sid=call_sid,
+            from_number=from_number,
+            to_number=to_number,
+            company_api_key=request.headers.get("X-Company-Key"),
+            agent_id=form_data.get("agent_id", "default"),
+            base_url=str(request.base_url)
         )
         
-        # Check if we have custom data for personalized messages
-        custom_data_str = query_params.get('custom_data')
-        if custom_data_str:
-            try:
-                import json
-                custom_data = json.loads(custom_data_str)
-                recipients = custom_data.get('recipients', {})
+        return Response(content=str(twiml), media_type="text/xml")
+        
+    async def handle_call_status(self, request: Request) -> Dict:
+        """Handle call status updates"""
+        form_data = await request.form()
+        
+        call_sid = form_data.get("CallSid")
+        call_status = form_data.get("CallStatus")
+        
+        await self.twilio_service.update_call_status(call_sid, call_status)
+        
+        # Handle specific status changes
+        if call_status == "completed":
+            await self._handle_call_completed(call_sid)
+        elif call_status == "failed":
+            await self._handle_call_failed(call_sid)
+            
+        return {"status": "ok"}
+        
+    async def _handle_call_completed(self, call_sid: str):
+        """Process completed call"""
+        # Generate call summary
+        if call_sid in self.conversation_manager.active_conversations:
+            context = self.conversation_manager.active_conversations[call_sid]
+            
+            # Save conversation transcript
+            await self._save_transcript(call_sid, context)
+            
+            # Generate and save summary
+            summary = await self._generate_call_summary(context)
+            await self._save_summary(call_sid, summary)
+            
+            # Clean up
+            del self.conversation_manager.active_conversations[call_sid]
+            
+    def _validate_signature(self, request: Request, form_data: Dict) -> bool:
+        """Validate Twilio webhook signature"""
+        signature = request.headers.get("X-Twilio-Signature", "")
+        auth_token = settings.twilio_auth_token
+        url = str(request.url)
+        
+        # Create signature string
+        s = url
+        if form_data:
+            for key in sorted(form_data.keys()):
+                s += key + form_data[key]
                 
-                # Check if we have personalized data for this number
-                if From in recipients:
-                    recipient_data = recipients[From]
-                    message_template = custom_data.get('message_template', base_message)
-                    
-                    # Replace placeholders in the template
-                    custom_message = message_template
-                    for key, value in recipient_data.items():
-                        custom_message = custom_message.replace(f"{{{key}}}", str(value))
-                    
-                    logger.info(f"Using personalized message for {From}: {custom_message}")
-                else:
-                    custom_message = base_message
-            except Exception as e:
-                logger.error(f"Error parsing custom data: {str(e)}")
-                custom_message = base_message
-        else:
-            custom_message = base_message
-        
-        # Get voice and language from query params or form data
-        custom_voice = query_params.get('voice') or voice or "alice"
-        custom_language = query_params.get('language') or language or "en-US"
-        custom_gather_input = query_params.get('gather_input', 'false').lower() == 'true' or gather_input
-        
-        logger.info(f"Using message: {custom_message}")
-        logger.info(f"Using voice: {custom_voice}, language: {custom_language}, gather_input: {custom_gather_input}")
-        
-        # Generate TwiML response
-        twiml_response = generate_twiml_response(
-            message=custom_message,
-            voice=custom_voice,
-            language=custom_language,
-            gather_input=custom_gather_input
+        # Calculate expected signature
+        mac = hmac.new(
+            auth_token.encode('utf-8'),
+            s.encode('utf-8'),
+            hashlib.sha1
         )
+        expected = base64.b64encode(mac.digest()).decode('utf-8')
         
-        logger.info(f"Generated TwiML response for call {CallSid}")
-        
-        # Return TwiML response
-        return Response(
-            content=twiml_response,
-            media_type="application/xml"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error handling incoming call webhook: {str(e)}")
-        # Return a simple error TwiML
-        error_twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice" language="en-US">Sorry, there was an error processing your call. Please try again later.</Say>
-</Response>"""
-        return Response(
-            content=error_twiml,
-            media_type="application/xml"
-        )
+        return hmac.compare_digest(expected, signature)
 
-@router.post("/call-status")
-async def handle_call_status(
-    request: Request,
-    CallSid: str = Form(...),
-    CallStatus: str = Form(...),
-    From: str = Form(...),
-    To: str = Form(...),
-    CallDuration: Optional[str] = Form(None),
-    RecordingUrl: Optional[str] = Form(None)
+# API Routes
+@router.post("/incoming")
+async def incoming_call(request: Request):
+    """Handle incoming call webhook"""
+    handler = TwilioWebhookHandler(twilio_service, conversation_manager)
+    return await handler.handle_incoming_call(request)
+
+@router.post("/status")
+async def call_status(request: Request):
+    """Handle call status webhook"""
+    handler = TwilioWebhookHandler(twilio_service, conversation_manager)
+    return await handler.handle_call_status(request)
+
+@router.websocket("/webrtc/twilio-stream/{peer_id}/{company_key}/{agent_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    peer_id: str,
+    company_key: str,
+    agent_id: str
 ):
-    """
-    Handle call status webhook from Twilio
+    """WebSocket endpoint for Twilio media streaming"""
+    await websocket.accept()
     
-    This endpoint receives status updates from Twilio about call progress.
-    """
-    try:
-        logger.info(f"Call status update - SID: {CallSid}, Status: {CallStatus}")
-        logger.info(f"From: {From}, To: {To}, Duration: {CallDuration}")
-        
-        if CallStatus == "completed":
-            logger.info(f"Call {CallSid} completed successfully")
-        elif CallStatus == "failed":
-            logger.error(f"Call {CallSid} failed")
-        elif CallStatus == "busy":
-            logger.warning(f"Call {CallSid} - number was busy")
-        elif CallStatus == "no-answer":
-            logger.warning(f"Call {CallSid} - no answer")
-        
-        # Return empty response (Twilio doesn't need a response for status callbacks)
-        return {"status": "received"}
-        
-    except Exception as e:
-        logger.error(f"Error handling call status webhook: {str(e)}")
-        return {"status": "error", "message": str(e)}
-
-@router.post("/gather-input")
-async def handle_gather_input(
-    request: Request,
-    CallSid: str = Form(...),
-    From: str = Form(...),
-    To: str = Form(...),
-    Digits: Optional[str] = Form(None),
-    SpeechResult: Optional[str] = Form(None)
-):
-    """
-    Handle gathered input from user during call
+    # Get call info from peer_id mapping
+    call_info = twilio_service.get_call_by_peer_id(peer_id)
     
-    This endpoint receives the result of a <Gather> verb from TwiML.
-    """
-    try:
-        logger.info(f"Gathered input from call {CallSid}")
-        logger.info(f"Digits: {Digits}, Speech: {SpeechResult}")
+    if not call_info:
+        await websocket.close(code=1008, reason="Invalid peer ID")
+        return
         
-        # Process the gathered input
-        if Digits:
-            response_message = f"You pressed {Digits}. Thank you for your input!"
-        elif SpeechResult:
-            response_message = f"You said: {SpeechResult}. Thank you for your response!"
-        else:
-            response_message = "No input received. Thank you for your time!"
-        
-        # Generate response TwiML
-        twiml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice" language="en-US">{response_message}</Say>
-    <Say voice="alice" language="en-US">Goodbye!</Say>
-</Response>"""
-        
-        return Response(
-            content=twiml_response,
-            media_type="application/xml"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error handling gather input: {str(e)}")
-        error_twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice" language="en-US">Sorry, there was an error processing your input. Goodbye!</Say>
-</Response>"""
-        return Response(
-            content=error_twiml,
-            media_type="application/xml"
-        )
-
-@router.get("/test-call")
-async def test_call_webhook():
-    """
-    Test endpoint to verify webhook is working
-    
-    Returns a simple TwiML response for testing.
-    """
-    test_twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice" language="en-US">This is a test call from your Twilio webhook. The webhook is working correctly!</Say>
-</Response>"""
-    
-    return Response(
-        content=test_twiml,
-        media_type="application/xml"
+    # Initialize stream handler
+    stream_handler = TwilioMediaStreamHandler(
+        call_sid=call_info["call_sid"],
+        stream_sid=None
     )
+    
+    # Set up components
+    stream_handler.stt_handler = RealTimeSTTHandler()
+    stream_handler.tts_handler = RealTimeTTSHandler()
+    stream_handler.conversation_manager = conversation_manager
+    
+    # Initialize components
+    await stream_handler.stt_handler.initialize()
+    await stream_handler.tts_handler.initialize()
+    
+    # Handle WebSocket connection
+    await stream_handler.handle_websocket(websocket, None)

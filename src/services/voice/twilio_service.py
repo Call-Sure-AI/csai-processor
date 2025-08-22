@@ -204,3 +204,6 @@ class TwilioVoiceService:
     def get_call_info(self, call_sid: str) -> Optional[Dict[str, Any]]:
         """Get information about a specific call"""
         return self.active_calls.get(call_sid)
+
+
+twilio_service = TwilioVoiceService()
