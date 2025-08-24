@@ -7,11 +7,10 @@ from fastapi.responses import Response
 from loguru import logger
 from datetime import datetime
 
-from services.speech.realtime_stream_service import RealTimeSTTHandler
+from services.speech.realtime_stream_service import RealTimeSTTHandler, RealTimeTTSHandler
 from services.speech.media_stream_service import TwilioMediaStreamHandler
 from services.voice.twilio_service import twilio_service
-from services.speech.conversation_manager_service import conversation_manager
-from services.speech.tts_service import RealTimeTTSHandler
+from services.speech.conversation_manager_service import create_conversation_manager
 
 from config.settings import settings
 
@@ -152,17 +151,58 @@ class TwilioWebhookHandler:
         expected = base64.b64encode(mac.digest()).decode('utf-8')
         
         return hmac.compare_digest(expected, signature)
+    
+    async def _save_transcript(self, call_sid: str, context):
+        """Save conversation transcript"""
+        # TODO: Implement transcript saving
+        logger.info(f"Saving transcript for call {call_sid}")
+        
+    async def _generate_call_summary(self, context):
+        """Generate call summary"""
+        # TODO: Implement call summary generation
+        logger.info(f"Generating summary for call {context.call_sid}")
+        return "Call completed successfully"
+        
+    async def _save_summary(self, call_sid: str, summary: str):
+        """Save call summary"""
+        # TODO: Implement summary saving
+        logger.info(f"Saving summary for call {call_sid}: {summary}")
+        
+    async def _handle_call_failed(self, call_sid: str):
+        """Handle failed call"""
+        logger.error(f"Call {call_sid} failed")
+        # TODO: Implement failed call handling
 
 # API Routes
-@router.post("/incoming")
+@router.post("/incoming-call")
 async def incoming_call(request: Request):
     """Handle incoming call webhook"""
+    # Create conversation manager with real agent config
+    agent_config = {
+        "name": "Default Agent",
+        "greeting": "Hello! How can I help you today?",
+        "voice": "alice",
+        "language": "en-US",
+        "call_type": "support"  # Default call type
+    }
+    
+    conversation_manager = create_conversation_manager(agent_config)
     handler = TwilioWebhookHandler(twilio_service, conversation_manager)
     return await handler.handle_incoming_call(request)
 
 @router.post("/status")
 async def call_status(request: Request):
     """Handle call status webhook"""
+    # Create conversation manager with real agent config
+    agent_config = {
+        "name": "Default Agent",
+        "greeting": "Hello! How can I help you today?",
+        "voice": "alice",
+        "language": "en-US",
+        "call_type": "support"  # Default call type
+    }
+    
+    conversation_manager = create_conversation_manager(agent_config)
     handler = TwilioWebhookHandler(twilio_service, conversation_manager)
     return await handler.handle_call_status(request)
 
@@ -192,7 +232,19 @@ async def websocket_endpoint(
     # Set up components
     stream_handler.stt_handler = RealTimeSTTHandler()
     stream_handler.tts_handler = RealTimeTTSHandler()
-    stream_handler.conversation_manager = conversation_manager
+    
+    # Create conversation manager for this stream with real agent config
+    agent_config = {
+        "name": f"Agent {agent_id}",
+        "greeting": "Hello! How can I help you today?",
+        "voice": "alice",
+        "language": "en-US",
+        "call_type": "support",
+        "company_key": company_key,
+        "agent_id": agent_id
+    }
+    
+    stream_handler.conversation_manager = create_conversation_manager(agent_config)
     
     # Initialize components
     await stream_handler.stt_handler.initialize()

@@ -81,7 +81,7 @@ def queue_outbound_call_task(
             if not webhook_url:
                 if not settings.webhook_base_url:
                     raise ValueError("Webhook URL or webhook_base_url must be configured")
-                webhook_url = f"{settings.webhook_base_url}/api/v1/twilio/webhook/incoming-call"
+                webhook_url = f"{settings.webhook_base_url}/api/v1/twilio/incoming-call"
             
             # Add custom message parameters to webhook URL if provided
             if call_metadata:
@@ -89,7 +89,7 @@ def queue_outbound_call_task(
                 params = {
                     'voice': call_metadata.get('voice', 'alice'),
                     'language': call_metadata.get('language', 'en-US'),
-                    'gather_input': str(call_metadata.get('gather_input', False)).lower()
+                    'gather_input': str(call_metadata.get('gather_input', True)).lower()  # Default to True for chat
                 }
                 
                 # Add message if provided
@@ -104,7 +104,16 @@ def queue_outbound_call_task(
                 
                 webhook_url_with_params = f"{webhook_url}?{urlencode(params)}"
             else:
-                webhook_url_with_params = webhook_url
+                # Default parameters for chat functionality
+                from urllib.parse import urlencode
+                params = {
+                    'voice': 'alice',
+                    'language': 'en-US',
+                    'gather_input': 'true'
+                }
+                webhook_url_with_params = f"{webhook_url}?{urlencode(params)}"
+            
+            logger.info(f"Webhook URL: {webhook_url}")
 
             logger.info(f"Webhook URL with params: {webhook_url_with_params}")
             

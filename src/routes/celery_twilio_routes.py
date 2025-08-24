@@ -7,7 +7,14 @@ from pydantic import BaseModel, Field, validator
 from datetime import datetime, timezone
 from loguru import logger
 
-from services.celery_service import celery_service
+from services.celery_tasks.twilio_calls import (
+    queue_outbound_call_task,
+    queue_bulk_calls_task,
+    schedule_call_task,
+    end_call_task,
+    get_call_status_task
+)
+from services.celery_app import celery_app
 from config.settings import settings
 
 router = APIRouter()
@@ -169,14 +176,18 @@ async def queue_single_call(request: SingleCallRequest):
             metadata = request.call_metadata.dict(exclude_none=True)
         
         # Queue the call
-        task_id = celery_service.queue_outbound_call(
-            to_number=request.to_number,
-            from_number=request.from_number or settings.twilio_phone_number,
-            webhook_url=request.webhook_url,
-            status_callback_url=request.status_callback_url,
-            call_metadata=metadata,
-            delay_seconds=request.delay_seconds
+        task = queue_outbound_call_task.apply_async(
+            kwargs={
+                'to_number': request.to_number,
+                'from_number': request.from_number or settings.twilio_phone_number,
+                'webhook_url': request.webhook_url,
+                'status_callback_url': request.status_callback_url,
+                'call_metadata': metadata,
+                'delay_seconds': request.delay_seconds
+            },
+            countdown=request.delay_seconds
         )
+        task_id = task.id
         
         # Calculate estimated completion
         estimated_completion = None
@@ -216,15 +227,18 @@ async def queue_bulk_calls(request: BulkCallRequest):
             metadata = request.call_metadata.dict(exclude_none=True)
         
         # Queue the bulk calls
-        task_id = celery_service.queue_bulk_calls(
-            phone_numbers=request.phone_numbers,
-            from_number=request.from_number or settings.twilio_phone_number,
-            webhook_url=request.webhook_url,
-            status_callback_url=request.status_callback_url,
-            call_metadata=metadata,
-            delay_between_calls=request.delay_between_calls,
-            max_concurrent_calls=request.max_concurrent_calls
+        task = queue_bulk_calls_task.apply_async(
+            kwargs={
+                'phone_numbers': request.phone_numbers,
+                'from_number': request.from_number or settings.twilio_phone_number,
+                'webhook_url': request.webhook_url,
+                'status_callback_url': request.status_callback_url,
+                'call_metadata': metadata,
+                'delay_between_calls': request.delay_between_calls,
+                'max_concurrent_calls': request.max_concurrent_calls
+            }
         )
+        task_id = task.id
         
         # Calculate estimated duration
         total_delay = (len(request.phone_numbers) - 1) * request.delay_between_calls
@@ -262,15 +276,18 @@ async def schedule_call(request: ScheduledCallRequest):
             metadata = request.call_metadata.dict(exclude_none=True)
         
         # Schedule the call
-        task_id = celery_service.schedule_call(
-            to_number=request.to_number,
-            from_number=request.from_number or settings.twilio_phone_number,
-            webhook_url=request.webhook_url,
-            status_callback_url=request.status_callback_url,
-            call_metadata=metadata,
-            schedule_time=request.schedule_time,
-            timezone=request.timezone
+        task = schedule_call_task.apply_async(
+            kwargs={
+                'to_number': request.to_number,
+                'from_number': request.from_number or settings.twilio_phone_number,
+                'webhook_url': request.webhook_url,
+                'status_callback_url': request.status_callback_url,
+                'call_metadata': metadata,
+                'schedule_time': request.schedule_time,
+                'timezone': request.timezone
+            }
         )
+        task_id = task.id
         
         logger.info(f"Scheduled call to {request.to_number} for {request.schedule_time} with task ID: {task_id}")
         
@@ -298,12 +315,17 @@ async def get_task_status(task_id: str):
     """
     try:
         # Get task status
-        status = celery_service.get_task_status(task_id)
+        task_result = celery_app.AsyncResult(task_id)
+        status = {
+            'status': task_result.status,
+            'info': task_result.info if task_result.info else {},
+            'traceback': task_result.traceback
+        }
         
         # Get task result if completed successfully
         result = None
-        if status.get('status') == 'SUCCESS':
-            result = celery_service.get_task_result(task_id)
+        if task_result.status == 'SUCCESS':
+            result = task_result.result
         
         return TaskStatusResponse(
             task_id=task_id,
@@ -331,7 +353,13 @@ async def cancel_task(task_id: str):
     This endpoint cancels a pending or running call task.
     """
     try:
-        success = celery_service.cancel_task(task_id)
+        # Cancel task using Celery
+        task_result = celery_app.AsyncResult(task_id)
+        if task_result.state in ['PENDING', 'STARTED']:
+            celery_app.control.revoke(task_id, terminate=True)
+            success = True
+        else:
+            success = False
         
         if success:
             logger.info(f"Task {task_id} cancelled successfully")
@@ -364,8 +392,37 @@ async def list_active_tasks():
     in the Celery queue, including their status and basic information.
     """
     try:
-        # Get active tasks from Celery service
-        active_tasks = celery_service.get_active_tasks()
+        # Get active tasks from Celery
+        inspector = celery_app.control.inspect()
+        active_tasks = []
+        
+        # Get active tasks
+        active = inspector.active()
+        if active:
+            for worker, tasks in active.items():
+                for task in tasks:
+                    active_tasks.append({
+                        'task_id': task['id'],
+                        'name': task['name'],
+                        'args': task['args'],
+                        'kwargs': task['kwargs'],
+                        'worker': worker,
+                        'time_start': task['time_start']
+                    })
+        
+        # Get pending tasks
+        pending = inspector.reserved()
+        if pending:
+            for worker, tasks in pending.items():
+                for task in tasks:
+                    active_tasks.append({
+                        'task_id': task['id'],
+                        'name': task['name'],
+                        'args': task['args'],
+                        'kwargs': task['kwargs'],
+                        'worker': worker,
+                        'status': 'PENDING'
+                    })
         
         logger.info(f"Retrieved {len(active_tasks)} active tasks")
         
@@ -392,8 +449,41 @@ async def kill_all_tasks():
     in the Celery queue. Use with caution as this will cancel all ongoing operations.
     """
     try:
-        # Kill all tasks using Celery service
-        result = celery_service.kill_all_tasks()
+        # Kill all tasks using Celery
+        inspector = celery_app.control.inspect()
+        killed_count = 0
+        failed_count = 0
+        failed_task_ids = []
+        
+        # Get all active tasks
+        active = inspector.active()
+        if active:
+            for worker, tasks in active.items():
+                for task in tasks:
+                    try:
+                        celery_app.control.revoke(task['id'], terminate=True)
+                        killed_count += 1
+                    except Exception as e:
+                        failed_count += 1
+                        failed_task_ids.append(task['id'])
+        
+        # Get all pending tasks
+        pending = inspector.reserved()
+        if pending:
+            for worker, tasks in pending.items():
+                for task in tasks:
+                    try:
+                        celery_app.control.revoke(task['id'], terminate=True)
+                        killed_count += 1
+                    except Exception as e:
+                        failed_count += 1
+                        failed_task_ids.append(task['id'])
+        
+        result = {
+            'killed_count': killed_count,
+            'failed_count': failed_count,
+            'failed_task_ids': failed_task_ids
+        }
         
         logger.warning(f"Killed {result['killed_count']} tasks")
         

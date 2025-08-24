@@ -121,7 +121,20 @@ celery_app.conf.update(
 )
 
 # Auto-discover tasks in the project
-celery_app.autodiscover_tasks()
+celery_app.autodiscover_tasks(['services.celery_tasks'])
+
+# Explicitly import tasks to ensure they are registered
+try:
+    import services.celery_tasks.twilio_calls
+    import services.celery_tasks.email
+    import services.celery_tasks.file_processing
+    import services.celery_tasks.ai_processing
+    import services.celery_tasks.cleanup
+    import services.celery_tasks.monitoring
+    import services.celery_tasks.scheduler
+    print("✓ All task modules imported successfully")
+except ImportError as e:
+    print(f"⚠ Warning: Could not import some task modules: {e}")
 
 if __name__ == "__main__":
     celery_app.start()

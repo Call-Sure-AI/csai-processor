@@ -69,6 +69,8 @@ class TwilioVoiceService:
             if kwargs:
                 call_params.update(kwargs)
             
+            logger.info(f"Call params: {call_params}")
+            
             call = self.client.calls.create(**call_params)
             
             call_data = {

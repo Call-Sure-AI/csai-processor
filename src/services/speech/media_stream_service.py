@@ -217,4 +217,7 @@ class TwilioMediaStreamHandler:
             await self.conversation_manager.end_call(self.call_sid)
 
 
-twilio_media_stream_handler = TwilioMediaStreamHandler()
+# Factory function to create TwilioMediaStreamHandler instances
+def create_twilio_media_stream_handler(call_sid: str, stream_sid: str) -> TwilioMediaStreamHandler:
+    """Create a new TwilioMediaStreamHandler instance"""
+    return TwilioMediaStreamHandler(call_sid=call_sid, stream_sid=stream_sid)

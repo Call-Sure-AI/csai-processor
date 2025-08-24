@@ -92,11 +92,12 @@ def start_flower():
     env = os.environ.copy()
     env["PYTHONPATH"] = str(src_path) + os.pathsep + env.get("PYTHONPATH", "")
     
+    # Fixed Flower command - use equals sign for port
     cmd = [
         "celery", "-A", "services.celery_app:celery_app", "flower",
-        "--port", "5555",
-        "--broker", settings.celery_broker_url,
-        "--result-backend", settings.celery_result_backend
+        "--port=5555",
+        "--broker=" + settings.celery_broker_url,
+        "--result-backend=" + settings.celery_result_backend
     ]
     
     print("Starting Flower monitoring")
