@@ -16,6 +16,9 @@ from services.celery_tasks.twilio_calls import (
 )
 from services.celery_app import celery_app
 from config.settings import settings
+from sqlalchemy.orm import Session
+from database.config import get_db
+from database.models import CeleryTaskMap
 
 router = APIRouter()
 
@@ -187,6 +190,8 @@ async def queue_single_call(request: SingleCallRequest):
             },
             countdown=request.delay_seconds
         )
+        db.add(CeleryTaskMap(task_id=task.id, to_number=request.to_number, scheduled_delay=request.delay_seconds))
+        db.commit()
         task_id = task.id
         
         # Calculate estimated completion
@@ -238,6 +243,8 @@ async def queue_bulk_calls(request: BulkCallRequest):
                 'max_concurrent_calls': request.max_concurrent_calls
             }
         )
+        db.add(CeleryTaskMap(task_id=task.id))
+        db.commit()
         task_id = task.id
         
         # Calculate estimated duration

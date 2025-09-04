@@ -8,8 +8,19 @@ from twilio.rest import Client
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Connect, Start
 from config.settings import settings
+from sqlalchemy.orm import Session
+from database.models import Call, CallEvent
 
 logger = logging.getLogger(__name__)
+
+def _upsert_call(db: Session, call_sid: str, **fields):
+    call = db.query(Call).filter(Call.call_sid == call_sid).one_or_none()
+    if not call:
+        call = Call(call_sid=call_sid)
+        db.add(call)
+    for k, v in fields.items():
+        setattr(call, k, v)
+    return call
 
 class TwilioVoiceService:
     """Twilio Voice API service with comprehensive call management"""
@@ -85,6 +96,18 @@ class TwilioVoiceService:
             
             self.active_calls[call.sid] = call_data
             logger.info(f"Created outbound call: {call.sid}")
+            db: Session = kwargs.get("db_session")
+            if db:
+                _call = _upsert_call(
+                    db,
+                    call_sid=call.sid,
+                    direction=call.direction or "outbound-api",
+                    from_number=call_data["from"],
+                    to_number=call.to,
+                    status=call.status,
+                )
+                db.add(CallEvent(call=_call, call_sid=call.sid, event="initiated"))
+                db.commit()
             return call_data
             
         except Exception as e:
@@ -134,6 +157,21 @@ class TwilioVoiceService:
             response.status_callback_method = "POST"
             
             logger.info(f"Generated TwiML for incoming call {call_sid} -> {peer_id}")
+            db: Session = kwargs.get("db_session")
+            if db:
+                _call = _upsert_call(
+                    db,
+                    call_sid=call_sid,
+                    direction="inbound",
+                    from_number=from_number,
+                    to_number=to_number,
+                    status="incoming",
+                    peer_id=peer_id,
+                    company_api_key=company_api_key,
+                    agent_id=agent_id,
+                )
+                db.add(CallEvent(call=_call, call_sid=call_sid, event="incoming"))
+                db.commit()
             return response
             
         except Exception as e:
@@ -149,6 +187,18 @@ class TwilioVoiceService:
                 **kwargs
             })
             logger.info(f"Updated call {call_sid} status to {status}")
+        db: Session = kwargs.get("db_session")
+        if db:
+            _fields = {"status": status}
+            if "duration" in kwargs and kwargs["duration"]:
+                try:
+                    _fields["duration_seconds"] = int(kwargs["duration"])
+                except: pass
+            call = _upsert_call(db, call_sid, **_fields)
+            db.add(CallEvent(call=call, call_sid=call_sid, event=status, payload=str(kwargs)))
+            if status == "completed":
+                call.end_time = func.now()
+            db.commit()
             
     async def end_call(self, call_sid: str) -> bool:
         """End an active call"""
@@ -157,7 +207,7 @@ class TwilioVoiceService:
             
         try:
             call = self.client.calls(call_sid).update(status='completed')
-            await self.update_call_status(call_sid, 'ended')
+            await self.update_call_status(call_sid, 'ended', db_session=kwargs.get("db_session"))
             logger.info(f"Ended call: {call_sid}")
             return True
         except Exception as e:

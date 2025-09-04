@@ -13,6 +13,9 @@ from managers.connection_manager import ConnectionManager
 from config.settings import settings
 from database.config import get_db
 from database.models import Company, Agent
+from sqlalchemy.orm import Session
+from database.config import get_db
+from database.models import Call, CallEvent, ConversationTurn
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -34,7 +37,8 @@ async def get_twilio_service() -> TwilioVoiceService:
 @router.post("/incoming-call")
 async def handle_incoming_call(
     request: Request,
-    twilio_service: TwilioVoiceService = Depends(get_twilio_service)
+    twilio_service: TwilioVoiceService = Depends(get_twilio_service),
+    db: Session = Depends(get_db)
 ):
     """Handle incoming Twilio voice calls with LLM integration"""
     try:
@@ -132,7 +136,8 @@ async def handle_incoming_call(
 @router.post("/call-status")
 async def handle_call_status(
     request: Request,
-    twilio_service: TwilioVoiceService = Depends(get_twilio_service)
+    twilio_service: TwilioVoiceService = Depends(get_twilio_service),
+    db: Session = Depends(get_db)
 ):
     """Handle Twilio call status callbacks"""
     try:
@@ -146,7 +151,8 @@ async def handle_call_status(
             call_sid=call_sid,
             status=call_status,
             duration=call_duration,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
+            db_session=db
         )
         
         # Handle call completion
@@ -206,6 +212,8 @@ async def handle_gather_callback(
             # User spoke something - use LLM to generate response
             if conversation_manager:
                 try:
+                    db.add(ConversationTurn(call_sid=call_sid, role="user", content=speech_result))
+                    db.commit()
                     # Process user input through conversation manager
                     llm_response = await conversation_manager.process_user_input(call_sid, speech_result)
                     
@@ -220,6 +228,8 @@ async def handle_gather_callback(
                         enhanced='true'  # Enhanced speech recognition
                     )
                     gather.say(llm_response, voice=voice, language=language)
+                    db.add(ConversationTurn(call_sid=call_sid, role="assistant", content=llm_response))
+                    db.commit()
                     response.append(gather)
                     
                     # Fallback if no input is received

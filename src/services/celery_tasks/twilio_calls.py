@@ -11,6 +11,9 @@ from .base import BaseTask
 from services.celery_app import celery_app
 from services.voice.twilio_service import TwilioVoiceService
 from config.settings import settings
+from sqlalchemy.orm import Session
+from database.config import SessionLocal
+from database.models import CeleryTaskMap
 
 # Global Twilio service instance
 twilio_service: Optional[TwilioVoiceService] = None
@@ -127,6 +130,15 @@ def queue_outbound_call_task(
                     **kwargs
                 )
             )
+            db: Session = SessionLocal()
+            try:
+                rec = db.query(CeleryTaskMap).filter(CeleryTaskMap.task_id == self.request.id).one_or_none()
+                if rec:
+                    rec.call_sid = call_data['call_sid']
+                    rec.success = True
+                    db.commit()
+            finally:
+                db.close()
         finally:
             loop.close()
         

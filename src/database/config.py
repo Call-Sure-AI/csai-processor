@@ -2,16 +2,22 @@
 Database configuration and session management
 """
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
 from typing import Generator
 import logging
-
+import os
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+Base = declarative_base()
+
+
+database_url = os.getenv("DATABASE_URL")
+engine = create_engine(database_url)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class DatabaseManager:
     """Database connection and session manager"""
