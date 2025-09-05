@@ -1,5 +1,5 @@
 # models/models.py
-from sqlalchemy import Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Table, LargeBinary
+from sqlalchemy import Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Table, LargeBinary, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -399,16 +399,16 @@ class AgentInteraction(Base):
 class Call(Base):
     __tablename__ = 'Call'
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     company_id = Column(String, ForeignKey('Company.id'))
     conversation_id = Column(String, ForeignKey('Conversation.id'), nullable=True)
     call_sid = Column(String(255), unique=True)
-    from_number = Column(String(20), nullable=False)
-    to_number = Column(String(20), nullable=False)
-    direction = Column(String(16), nullable=True)
-    peer_id = Column(String(128), nullable=True)
-    company_api_key = Column(String(255), nullable=True)
-    agent_id = Column(String(255), nullable=True)
+    from_number = Column(String(20), nullable=True)
+    to_number = Column(String(20), nullable=True)
+    #direction = Column(String(16), nullable=True)
+    #peer_id = Column(String(128), nullable=True)
+    #company_api_key = Column(String(255), nullable=True)
+    #agent_id = Column(String(255), nullable=True)
     status = Column(String(50), nullable=False)
     duration = Column(Float)
     recording_url = Column(String(255))

@@ -10,6 +10,7 @@ from twilio.twiml.voice_response import VoiceResponse, Connect, Start
 from config.settings import settings
 from sqlalchemy.orm import Session
 from database.models import Call, CallEvent
+from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 

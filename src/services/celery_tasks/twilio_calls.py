@@ -14,6 +14,7 @@ from config.settings import settings
 from sqlalchemy.orm import Session
 from database.config import SessionLocal
 from database.models import CeleryTaskMap
+from sqlalchemy import func
 
 # Global Twilio service instance
 twilio_service: Optional[TwilioVoiceService] = None
