@@ -22,8 +22,11 @@ class SpeechToTextService:
         # Get Deepgram API key from environment variable or use a default for development
         self.deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY")
         self.deepgram_url = "https://api.deepgram.com/v1/listen"
-        if not self.deepgram_api_key:
-            logger.warning("DEEPGRAM_API_KEY environment variable not set - speech recognition will fail")
+        self.mock_mode = not self.deepgram_api_key or self.deepgram_api_key == "mock"
+        
+        if self.mock_mode:
+            logger.warning("DEEPGRAM_API_KEY not set or set to 'mock' - using mock STT mode for development")
+            logger.info("Mock STT will simulate speech recognition for testing purposes")
             
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
@@ -93,6 +96,10 @@ class SpeechToTextService:
     async def _recognize_speech(self, audio_data: bytes, session_id: str) -> Optional[str]:
         """Enhanced speech recognition with detailed logging"""
         try:
+            # Mock mode for development/testing
+            if self.mock_mode:
+                return await self._mock_speech_recognition(audio_data, session_id)
+            
             # Enhanced Deepgram API configuration
             headers = {
                 "Authorization": f"Token {self.deepgram_api_key}",
@@ -258,3 +265,41 @@ class SpeechToTextService:
             self.active_sessions[session_id]["buffer"] = bytearray()
             return True
         return False
+    
+    async def _mock_speech_recognition(self, audio_data: bytes, session_id: str) -> Optional[str]:
+        """Mock speech recognition for development/testing"""
+        try:
+            # Simulate processing delay
+            await asyncio.sleep(0.1)
+            
+            # Analyze audio energy to determine if there's speech
+            silence_level = 128
+            active_bytes = sum(1 for b in audio_data if abs(b - silence_level) > 10)
+            energy_ratio = active_bytes / len(audio_data) if audio_data else 0
+            
+            # Only return mock transcription if there's sufficient audio activity
+            if energy_ratio > 0.1:  # 10% of audio is above silence threshold
+                # Mock responses for testing
+                mock_responses = [
+                    "Hello, how are you today?",
+                    "I need help with my account",
+                    "Can you help me with billing?",
+                    "What are your business hours?",
+                    "Thank you for your assistance",
+                    "I have a question about my order",
+                    "Can I speak to a manager?",
+                    "I'm having trouble with the website"
+                ]
+                
+                # Use session_id to consistently return the same response for testing
+                response_index = hash(session_id) % len(mock_responses)
+                mock_text = mock_responses[response_index]
+                
+                logger.info(f"Mock STT transcription for {session_id}: '{mock_text}' (energy: {energy_ratio:.2f})")
+                return mock_text
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error in mock speech recognition: {str(e)}")
+            return None
