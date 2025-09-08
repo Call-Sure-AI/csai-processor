@@ -1,5 +1,5 @@
 # models/models.py
-from sqlalchemy import Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Table, LargeBinary
+from sqlalchemy import Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Table, LargeBinary, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -8,8 +8,9 @@ from datetime import datetime
 import uuid
 from enum import Enum
 from sqlalchemy import Enum as SQLEnum
+from .config import Base
 
-Base = declarative_base()
+#Base = declarative_base()
 
 class AgentType(str, Enum):
     base = "base"
@@ -394,37 +395,69 @@ class AgentInteraction(Base):
         viewonly=True  # Added this line
     )
     
-    
+
 class Call(Base):
     __tablename__ = 'Call'
-    
-    # Primary fields
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     company_id = Column(String, ForeignKey('Company.id'))
     conversation_id = Column(String, ForeignKey('Conversation.id'), nullable=True)
-    
-    # Call Details
     call_sid = Column(String(255), unique=True)
-    from_number = Column(String(20), nullable=False)
-    to_number = Column(String(20), nullable=False)
-    
-    # Status and Duration
+    from_number = Column(String(20), nullable=True)
+    to_number = Column(String(20), nullable=True)
+    #direction = Column(String(16), nullable=True)
+    #peer_id = Column(String(128), nullable=True)
+    #company_api_key = Column(String(255), nullable=True)
+    #agent_id = Column(String(255), nullable=True)
     status = Column(String(50), nullable=False)
-    duration = Column(Float)  # in seconds
-    
-    # Media
+    duration = Column(Float)
     recording_url = Column(String(255))
     transcription = Column(Text)
-    
-    # Analytics
     cost = Column(Float, default=0.0)
     quality_score = Column(Float, nullable=True)
-    
-    # Timestamps
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     answered_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
-    
-    # Relationships
+    events = relationship("CallEvent", back_populates="call", cascade="all, delete-orphan")
+    turns = relationship("ConversationTurn", back_populates="call", cascade="all, delete-orphan")
     company = relationship("Company", back_populates="calls")
+
+class CallEvent(Base):
+    __tablename__ = 'CallEvent'
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    call_id = Column(String, ForeignKey('Call.id'), nullable=True)
+    call_sid = Column(String(255), index=True, nullable=False)
+
+    event = Column(String(64), nullable=False)
+    payload = Column(JSONB, nullable=True)
+    occurred_at = Column(DateTime, default=datetime.now)
+
+    call = relationship("Call", back_populates="events")
+
+
+class ConversationTurn(Base):
+    __tablename__ = 'ConversationTurn'
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    call_id = Column(String, ForeignKey('Call.id'), nullable=True)
+    call_sid = Column(String(255), index=True, nullable=False)
+
+    role = Column(String(16))
+    content = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+
+    call = relationship("Call", back_populates="turns")
+
+
+class CeleryTaskMap(Base):
+    __tablename__ = 'CeleryTaskMap'
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = Column(String(128), index=True, unique=True, nullable=False)
+    call_sid = Column(String(255), index=True, nullable=True)
+    to_number = Column(String(32), nullable=True)
+    scheduled_delay = Column(Integer, default=0)
+    success = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
