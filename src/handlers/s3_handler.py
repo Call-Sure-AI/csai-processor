@@ -17,10 +17,10 @@ class S3Config:
         secret_access_key: str = None,
         bucket_name: str = None
     ):
-        self.region = region or os.getenv('AWS_REGION', 'us-east-1')
-        self.access_key_id = access_key_id or os.getenv('AWS_ACCESS_KEY_ID')
-        self.secret_access_key = secret_access_key or os.getenv('AWS_SECRET_ACCESS_KEY')
-        self.bucket_name = bucket_name or os.getenv('S3_BUCKET_NAME')
+        self.region = region or os.getenv('aws_region', 'us-east-1')
+        self.access_key_id = access_key_id or os.getenv('aws_access_key_id')
+        self.secret_access_key = secret_access_key or os.getenv('aws_secret_access_key')
+        self.bucket_name = bucket_name or os.getenv('s3_bucket_name')
 
 class S3Handler:
     def __init__(self, config: S3Config = None):
