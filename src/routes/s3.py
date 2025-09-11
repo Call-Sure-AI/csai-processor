@@ -8,7 +8,7 @@ import io
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/s3", tags=["s3"])
+router = APIRouter()
 
 s3_handler = S3Handler()
 
@@ -59,6 +59,21 @@ async def upload_multiple_files(
     except Exception as e:
         logger.error(f"Error in upload_multiple_files: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+        
+def generate_presigned_url(bucket_name, object_key, expiration=3600):
+    """Generate a presigned URL for the S3 object"""
+    s3_client = boto3.client('s3', region_name='eu-north-1')
+    
+    try:
+        response = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': object_key},
+            ExpiresIn=expiration  # URL expires in 1 hour
+        )
+        return response
+    except ClientError as e:
+        logger.error(f"Error generating presigned URL: {e}")
+        return None
 
 @router.get("/file-details/{key:path}", response_model=None)
 async def get_file_details(

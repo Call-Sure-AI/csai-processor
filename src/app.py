@@ -26,6 +26,7 @@ from routes.twilio_webhook_routes import router as twilio_webhook_router
 from routes.elevenlabs_twilio_routes import router as elevenlabs_twilio_router, elevenlabs_integration_lifespan
 from routes.webrtc_elevenlabs_routes import router as webrtc_elevenlabs_router, webrtc_lifespan
 from routes.elevenlabs_twilio_websocket_routes import router as elevenlabs_twilio_websocket_router
+from routes.s3 import router as s3_router
 
 # Configure logging
 logging.basicConfig(
@@ -130,6 +131,8 @@ def create_app() -> FastAPI:
 
     # Include WebRTC routes
     app.include_router(webrtc_router, prefix="/api/v1/webrtc", tags=["WebRTC"])
+
+    app.include_router(s3_router, prefix="/api/v1/s3", tags=["S3"])
     
     # Include Twilio routes
     app.include_router(twilio_router, prefix="/api/v1/twilio", tags=["Twilio Voice"])
