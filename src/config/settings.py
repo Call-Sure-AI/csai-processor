@@ -25,7 +25,18 @@ class Settings(BaseSettings):
     database_url: str = Field(..., env="DATABASE_URL")
     database_pool_size: int = Field(default=10, env="DATABASE_POOL_SIZE")
     database_max_overflow: int = Field(default=20, env="DATABASE_MAX_OVERFLOW")
-    
+
+    # Server Configuration
+    server_url: str = Field(..., env="SERVER")
+    from_number: str = Field(..., env="FROM_NUMBER")
+    transfer_number: Optional[str] = Field(default=None, env="TRANSFER_NUMBER")
+
+    # Recording
+    recording_enabled: bool = Field(default=False, env="RECORDING_ENABLED")
+
+    # Service Selection
+    default_service: str = Field(default="elevenlabs", env="DEFAULT_SERVICE")
+
     # Redis
     redis_url: str = Field(default="redis://localhost:6379", env="REDIS_DB_URL")
     

@@ -27,7 +27,17 @@ class ConversationContext:
         self.interruption_count = 0
         self.clarification_attempts = 0
         self.sentiment_history = []
-        
+        self.function_calls: List[Dict] = []
+
+    def add_function_call(self, function_name: str, arguments: Dict, result: Any):
+        """Track function calls made during conversation"""
+        self.function_calls.append({
+            "function": function_name,
+            "arguments": arguments,
+            "result": result,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+                
     def add_message(self, role: str, content: str, metadata: Optional[Dict] = None):
         """Add message to conversation history"""
         message = {
@@ -106,7 +116,9 @@ class ConversationManager:
         return response
         
     async def _generate_response(self, context: ConversationContext) -> str:
-        """Generate response using LLM service"""
+        """
+        Generate response using LLM service WITH FUNCTION CALLING SUPPORT
+        """
         try:
             # Get conversation messages for LLM
             messages = []
@@ -116,10 +128,11 @@ class ConversationManager:
                     "content": msg["content"]
                 })
             
-            # Generate response using LLM service
             response = await llm_service.generate_response(
                 messages=messages,
-                context=context.metadata
+                context=context.metadata,
+                enable_functions=True,
+                call_sid=context.call_sid
             )
             
             return response

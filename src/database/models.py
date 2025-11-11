@@ -461,3 +461,79 @@ class CeleryTaskMap(Base):
     scheduled_delay = Column(Integer, default=0)
     success = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
+
+class Campaign(Base):
+    """Campaign model for managing outbound calling campaigns"""
+    __tablename__ = 'Campaign'
+    
+    # Primary fields
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    campaign_name = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    company_id = Column(String, ForeignKey('Company.id'), nullable=True)
+    created_by = Column(String, nullable=True)  # User ID who created the campaign
+    
+    # Campaign Status
+    status = Column(String(50), default='draft', nullable=False)  # draft, active, paused, completed, failed
+    
+    # Leads Configuration
+    leads_count = Column(Integer, default=0, nullable=False)
+    csv_file_path = Column(String(500), nullable=True)
+    leads_file_url = Column(String(500), nullable=True)
+    data_mapping = Column(JSONB, default=dict, nullable=False)  # Column mappings for CSV
+    
+    # Campaign Configuration
+    booking_config = Column(JSONB, default=dict, nullable=False)
+    automation_config = Column(JSONB, default=dict, nullable=False)
+    email_settings = Column(JSONB, default=dict, nullable=False)
+    call_settings = Column(JSONB, default=dict, nullable=False)
+    schedule_settings = Column(JSONB, default=dict, nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    calls = relationship("CampaignCall", back_populates="campaign", cascade="all, delete-orphan")
+
+
+class CampaignCall(Base):
+    """Individual call within a campaign"""
+    __tablename__ = 'CampaignCall'
+    
+    # Primary fields
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    campaign_id = Column(String, ForeignKey('Campaign.id'), nullable=False)
+    
+    # Contact Information
+    phone_number = Column(String(20), nullable=False)
+    country_code = Column(String(10), nullable=False)
+    
+    # Call Status
+    status = Column(
+        String(50), 
+        default='pending', 
+        nullable=False
+    )  # pending, calling, completed, busy, no-answer, failed
+    
+    # Twilio Information
+    call_sid = Column(String(255), nullable=True)
+    duration = Column(Integer, nullable=True)  # in seconds
+    cost = Column(Float, nullable=True)
+    
+    # Error Handling
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0, nullable=False)
+    max_retries = Column(Integer, default=3, nullable=False)
+    
+    # Scheduling
+    scheduled_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    campaign = relationship("Campaign", back_populates="calls")

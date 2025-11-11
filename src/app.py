@@ -27,6 +27,7 @@ from routes.elevenlabs_twilio_routes import router as elevenlabs_twilio_router, 
 from routes.webrtc_elevenlabs_routes import router as webrtc_elevenlabs_router, webrtc_lifespan
 from routes.elevenlabs_twilio_websocket_routes import router as elevenlabs_twilio_websocket_router
 from routes.s3 import router as s3_router
+from routes.campaign_routes import router as campaign_router
 
 # Configure logging
 logging.basicConfig(
@@ -151,6 +152,9 @@ def create_app() -> FastAPI:
     
     # Include ElevenLabs Twilio WebSocket routes
     app.include_router(elevenlabs_twilio_websocket_router, tags=["ElevenLabs WebSocket"])
+    
+    # Campaign router
+    app.include_router(campaign_router, prefix="/campaign", tags=["Campaign Management"])
     
     # WebSocket endpoint
     @app.websocket("/ws/{client_id}")
