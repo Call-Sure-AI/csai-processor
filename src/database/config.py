@@ -62,6 +62,7 @@ class DatabaseClient:
         except Exception as e:
             logger.error(f"Failed to connect to database: {str(e)}")
             raise
+
     
     def query(self, text: str, params: list = None):
         """
