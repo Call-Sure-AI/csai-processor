@@ -58,8 +58,7 @@ class DatabaseClient:
                 bind=self.engine
             )
             
-            self._initialized = True
-            
+            self._initialized = True           
         except Exception as e:
             logger.error(f"Failed to connect to database: {str(e)}")
             raise
