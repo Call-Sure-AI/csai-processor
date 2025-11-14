@@ -6,7 +6,7 @@ import httpx
 from config.settings import settings
 
 # Import function calling components
-from functions.function_manifest import format_tools_for_openai, get_tool_by_name
+from functions.functions_mainfest import format_tools_for_openai, get_tool_by_name
 from functions.function_executor import function_executor
 
 logger = logging.getLogger(__name__)

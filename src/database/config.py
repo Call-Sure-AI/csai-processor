@@ -9,6 +9,7 @@ import signal
 import sys
 from dotenv import load_dotenv
 from config.settings import settings
+from sqlalchemy import text
 
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ class DatabaseClient:
             )
 
             with self.engine.connect() as conn:
-                conn.execute("SELECT 1")
+                conn.execute(text("SELECT 1"))
                 logger.info("Database connection established successfully")
 
             self.SessionLocal = sessionmaker(

@@ -1,8 +1,8 @@
 from typing import List, Dict, Optional, Any, AsyncIterator
 import logging
 from langchain_openai import ChatOpenAI
-from langchain.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
+from langchain_core.prompts import PromptTemplate
+from langchain_classic.chains import RetrievalQA
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import AIMessageChunk
 import asyncio
@@ -10,6 +10,7 @@ import json
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
 
 class RAGService:
     def __init__(self, qdrant_service):
@@ -25,80 +26,27 @@ class RAGService:
         
         # Custom QA prompt template
         self.qa_template = """You are a helpful AI assistant for a customer support line. Use the following pieces of context to answer the question.
-            If the context contains relevant information, provide a detailed and accurate response.
-            If the context doesn't contain relevant information, respond in a helpful, friendly way without mentioning the lack of context.
+If the context contains relevant information, provide a detailed and accurate response.
+If the context doesn't contain relevant information, respond in a helpful, friendly way without mentioning the lack of context.
 
-            Context: {context}
+Context: {context}
 
-            Question: {question}
+Question: {input}
 
-            Instructions:
-            1. Base your answer ONLY on the provided context when relevant
-            2. Be specific and cite information from the context when possible
-            3. If the context is not relevant, provide a general helpful response as a customer service agent
-            4. Maintain a helpful and friendly conversational tone
-            5. Keep responses concise and to the point
-            6. If the user is simply saying hello, greet them warmly and ask how you can help
+Instructions:
+1. Base your answer ONLY on the provided context when relevant
+2. Be specific and cite information from the context when possible
+3. If the context is not relevant, provide a general helpful response as a customer service agent
+4. Maintain a helpful and friendly conversational tone
+5. Keep responses concise and to the point
+6. If the user is simply saying hello, greet them warmly and ask how you can help
 
-            Answer: """
-        
-        
-        self.qa_prompt = PromptTemplate(
-            template=self.qa_template,
-            input_variables=["context", "question"]
-        )
+Answer: """
         
         # Caching mechanism for chains
         self.chain_cache = {}
     
-    # async def create_qa_chain(self, company_id: str, agent_id: Optional[str] = None) -> RetrievalQA:
-    #     """Create a QA chain using the vector store for a company/agent"""
-    #     try:
-    #         # Check if chain already exists in cache
-    #         cache_key = f"{company_id}_{agent_id or 'all'}"
-    #         if cache_key in self.chain_cache:
-    #             return self.chain_cache[cache_key]
-            
-    #         # Get vector store
-    #         vector_store = await self.qdrant_service.get_vector_store(company_id)
-            
-    #         # Create retriever, optionally with agent filter
-    #         search_kwargs = {"k": 5, "score_threshold": 0.2}
-    #         if agent_id:
-    #             from qdrant_client import models
-    #             search_filter = models.Filter(
-    #                 must=[models.FieldCondition(
-    #                     key="metadata.agent_id",
-    #                     match=models.MatchValue(value=str(agent_id))
-    #                 )]
-    #             )
-    #             search_kwargs["filter"] = search_filter
-            
-    #         retriever = vector_store.as_retriever(
-    #             search_type="similarity",
-    #             search_kwargs=search_kwargs
-    #         )
-            
-    #         # Build the RetrievalQA chain
-    #         chain = RetrievalQA.from_chain_type(
-    #             llm=self.llm,
-    #             chain_type="stuff",
-    #             retriever=retriever,
-    #             return_source_documents=True,
-    #             chain_type_kwargs={"prompt": self.qa_prompt, "document_variable_name": "context"}
-    #         )
-            
-    #         # Cache the chain
-    #         self.chain_cache[cache_key] = chain
-            
-    #         logger.info(f"Created QA chain for company {company_id}, agent {agent_id}")
-    #         return chain
-            
-    #     except Exception as e:
-    #         logger.error(f"Error creating QA chain: {str(e)}")
-    #         raise
-    
-    async def create_qa_chain(self, company_id: str, agent_id: Optional[str] = None, agent_prompt: Optional[str] = None) -> RetrievalQA:
+    async def create_qa_chain(self, company_id: str, agent_id: Optional[str] = None, agent_prompt: Optional[str] = None):
         """Create a QA chain using the vector store for a company/agent"""
         try:
             # Check if chain already exists in cache
@@ -131,22 +79,15 @@ class RAGService:
             if agent_prompt:
                 # Add necessary placeholders to the agent's prompt
                 if "{context}" not in agent_prompt:
-                    agent_prompt = f"{agent_prompt}\n\nContext: {{context}}\n\nQuestion: {{question}}\n\nAnswer: "
+                    agent_prompt = f"{agent_prompt}\n\nContext: {{context}}\n\nQuestion: {{input}}\n\nAnswer: "
                 qa_template = agent_prompt
             
-            qa_prompt = PromptTemplate(
-                template=qa_template,
-                input_variables=["context", "question"]
-            )
+            # Create prompt using ChatPromptTemplate
+            qa_prompt = ChatPromptTemplate.from_template(qa_template)
             
-            # Build the RetrievalQA chain
-            chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff",
-                retriever=retriever,
-                return_source_documents=True,
-                chain_type_kwargs={"prompt": qa_prompt, "document_variable_name": "context"}
-            )
+            # Build the new-style chain
+            combine_docs_chain = create_stuff_documents_chain(self.llm, qa_prompt)
+            chain = create_retrieval_chain(retriever, combine_docs_chain)
             
             # Cache the chain
             self.chain_cache[cache_key] = chain
@@ -158,53 +99,12 @@ class RAGService:
             logger.error(f"Error creating QA chain: {str(e)}")
             raise
     
-    
-    # async def get_answer_with_chain(
-    #     self,
-    #     chain: RetrievalQA,
-    #     question: str,
-    #     conversation_context: Optional[List[Dict]] = None
-    # ) -> AsyncIterator[str]:
-    #     """Stream responses token-by-token from the RAG chain"""
-    #     try:
-    #         logger.info(f"Querying chain with question: {question}")
-            
-    #         # Add conversation context if available
-    #         query_with_context = question
-    #         if conversation_context:
-    #             recent_messages = "\n".join([
-    #                 f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content']}"
-    #                 for msg in conversation_context[-3:]  # Use last 3 messages
-    #             ])
-                
-    #             query_with_context = f"{recent_messages}\n\nCurrent question: {question}"
-    #             logger.info(f"Added conversation context: {recent_messages[:100]}...")
-            
-    #         # Stream response using astream_events
-    #         async for event in chain.astream_events(
-    #             {"query": query_with_context, "question": question},
-    #             config=RunnableConfig(run_name="streaming_chain"),
-    #             version="v2"
-    #         ):
-    #             if event["event"] == "on_chat_model_stream":
-    #                 chunk = event["data"].get("chunk", "")
-    #                 if isinstance(chunk, AIMessageChunk):
-    #                     token = chunk.content
-    #                 else:
-    #                     token = str(chunk)
-                    
-    #                 yield token
-                
-    #     except Exception as e:
-    #         logger.error(f"Error getting answer with chain: {str(e)}")
-    #         yield "I encountered an error processing your question."
-    
     async def get_answer_with_chain(
         self,
-        chain: RetrievalQA,
+        chain,
         question: str,
         conversation_context: Optional[List[Dict]] = None,
-        company_name: str = "our service"  # Add default company name
+        company_name: str = "our service"
     ) -> AsyncIterator[str]:
         """Stream responses token-by-token from the RAG chain"""
         try:
@@ -212,10 +112,7 @@ class RAGService:
             
             # Handle special system commands
             if question == "__SYSTEM_WELCOME__":
-                # Yield a friendly welcome message instead of querying the knowledge base
                 welcome_message = f"Hello! Welcome to {company_name}. I'm your AI voice assistant. How may I help you today?"
-                
-                # Yield the message token by token to maintain streaming behavior
                 for token in welcome_message.split():
                     yield token + " "
                 return
@@ -225,15 +122,14 @@ class RAGService:
             if conversation_context:
                 recent_messages = "\n".join([
                     f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content']}"
-                    for msg in conversation_context[-3:]  # Use last 3 messages
+                    for msg in conversation_context[-3:]
                 ])
-                
                 query_with_context = f"{recent_messages}\n\nCurrent question: {question}"
                 logger.info(f"Added conversation context: {recent_messages[:100]}...")
             
             # Stream response using astream_events
             async for event in chain.astream_events(
-                {"query": query_with_context, "question": question},
+                {"input": query_with_context},  # Changed from "query" and "question" to just "input"
                 config=RunnableConfig(run_name="streaming_chain"),
                 version="v2"
             ):
@@ -244,12 +140,12 @@ class RAGService:
                     else:
                         token = str(chunk)
                     
-                    yield token
+                    if token:
+                        yield token
                 
         except Exception as e:
             logger.error(f"Error getting answer with chain: {str(e)}")
             yield "I encountered an error processing your question."
-    
     
     async def get_answer(
         self,
