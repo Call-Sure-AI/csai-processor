@@ -101,7 +101,7 @@ def create_app() -> FastAPI:
             # Check if critical services are initialized
             services_status = {
                 "connection_manager": connection_manager is not None,
-                "background_worker": background_worker is not None and background_worker.is_running() if background_worker else False,
+                "background_worker": background_worker is not None,
                 "conversation_manager": conversation_manager is not None,
                 "agent_manager": agent_manager is not None,
                 "webrtc_manager": webrtc_manager is not None,
