@@ -2,16 +2,15 @@ name: Deploy to AWS EC2
 
 on:
   push:
-    branches: [ main ]  # Trigger on push to main branch
+    branches: [ main ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-    
+      
     - name: Deploy to EC2
       uses: appleboy/ssh-action@master
       with:
@@ -19,9 +18,5 @@ jobs:
         username: ${{ secrets.EC2_USERNAME }}
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
-          cd /home/ec2-user/csai-processor
-          git pull origin main
-          docker-compose down
-          docker-compose pull
-          docker-compose up -d --build
-          docker system prune -f
+          cd /home/ubuntu/csai-processor
+          ~/deploy.sh
