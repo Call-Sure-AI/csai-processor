@@ -49,7 +49,7 @@ class TwilioVoiceService:
         except Exception as e:
             logger.error(f"Failed to initialize Twilio service: {str(e)}")
             
-    def validate_request(self, request_signature: str, request_url: str, params: Dict[str, Any]) -> bool:
+    def validate_request(self, request_signature: str, request_url: str, params: Dict[str, Any], db: Session = Depends(get_db)) -> bool:
         """Validate incoming Twilio webhook requests"""
         if not self.validator:
             return False

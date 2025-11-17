@@ -179,7 +179,8 @@ async def handle_call_status(
 @router.post("/gather-callback")
 async def handle_gather_callback(
     request: Request,
-    twilio_service: TwilioVoiceService = Depends(get_twilio_service)
+    twilio_service: TwilioVoiceService = Depends(get_twilio_service),
+    db: Session = Depends(get_db)
 ):
     """Handle user input from Gather verb with LLM integration"""
     try:
