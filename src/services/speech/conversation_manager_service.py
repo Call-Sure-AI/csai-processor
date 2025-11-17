@@ -81,6 +81,23 @@ class ConversationManager:
         
         return greeting
 
+    def get_conversation_history(self, call_sid: str) -> List[Dict[str, str]]:
+        """Get conversation history for RAG context"""
+        context = self.active_conversations.get(call_sid)
+        if not context:
+            return []
+        
+        return [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in context.get_context_window(max_messages=5)
+        ]
+
+    def add_to_history(self, call_sid: str, role: str, content: str):
+        """Add message to conversation history"""
+        context = self.active_conversations.get(call_sid)
+        if context:
+            context.add_message(role, content)
+
     async def process_user_input_with_rag(
         self,
         call_sid: str,
