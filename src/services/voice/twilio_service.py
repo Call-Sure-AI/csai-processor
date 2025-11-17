@@ -49,7 +49,7 @@ class TwilioVoiceService:
         except Exception as e:
             logger.error(f"Failed to initialize Twilio service: {str(e)}")
             
-    def validate_request(self, request_signature: str, request_url: str, params: Dict[str, Any], db: Session = Depends(get_db)) -> bool:
+    def validate_request(self, request_signature: str, request_url: str, params: Dict[str, Any]) -> bool:
         """Validate incoming Twilio webhook requests"""
         if not self.validator:
             return False
@@ -61,6 +61,7 @@ class TwilioVoiceService:
         from_number: str, 
         webhook_url: str,
         status_callback_url: Optional[str] = None,
+        db_session: Optional[Session] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Initiate an outbound call"""
@@ -122,7 +123,9 @@ class TwilioVoiceService:
         to_number: str,
         company_api_key: str,
         agent_id: str,
-        base_url: str
+        base_url: str,
+        db_session: Optional[Session] = None,
+        **kwargs
     ) -> VoiceResponse:
         """Handle incoming call and generate TwiML response"""
         try:
@@ -201,7 +204,7 @@ class TwilioVoiceService:
                 call.end_time = func.now()
             db.commit()
             
-    async def end_call(self, call_sid: str) -> bool:
+    async def end_call(self, call_sid: str, db_session: Optional[Session] = None, **kwargs) -> bool:
         """End an active call"""
         if not self.client:
             return False
