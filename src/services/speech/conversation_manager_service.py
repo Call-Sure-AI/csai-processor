@@ -3,10 +3,15 @@ from datetime import datetime
 from enum import Enum
 import logging
 
+from services.rag.rag_service import RAGService
+from services.vector_store.qdrant_service import QdrantService
 from services.speech.sentiment_analyzer_service import SentimentAnalyzer
 from services.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
+
+qdrant_service = QdrantService()
+rag_service = RAGService(qdrant_service)
 
 class ConversationState(Enum):
     GREETING = "greeting"
@@ -75,7 +80,41 @@ class ConversationManager:
         context.add_message("assistant", greeting)
         
         return greeting
-        
+
+    async def process_user_input_with_rag(
+        self,
+        call_sid: str,
+        user_input: str,
+        company_id: str,
+        agent_id: str
+    ) -> str:
+        """Process user input using RAG"""
+        try:
+            # Get conversation context
+            conversation_context = self.get_conversation_history(call_sid)
+            
+            # Get answer from RAG
+            response_tokens = []
+            async for token in rag_service.get_answer(
+                company_id=company_id,
+                question=user_input,
+                agent_id=agent_id,
+                conversation_context=conversation_context
+            ):
+                response_tokens.append(token)
+            
+            response = "".join(response_tokens)
+            
+            # Update conversation history
+            self.add_to_history(call_sid, "user", user_input)
+            self.add_to_history(call_sid, "assistant", response)
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error processing with RAG: {str(e)}")
+            return "I'm having trouble accessing my knowledge base right now."
+
     async def process_user_input(
         self, 
         call_sid: str, 

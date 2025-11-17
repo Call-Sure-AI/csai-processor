@@ -2,7 +2,6 @@ from typing import Dict, List, Optional, Any
 import logging
 from qdrant_client import QdrantClient, models
 from langchain_openai import OpenAIEmbeddings
-from langchain_qdrant import QdrantVectorStore
 from config.settings import settings
 import asyncio
 from datetime import datetime
@@ -11,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class QdrantService:
     def __init__(self):
-        """Initialize Qdrant service with necessary components"""
+        """Initialize Qdrant service with dedicated collection for this application"""
         self.embeddings = OpenAIEmbeddings(
             model="text-embedding-3-small",
             openai_api_key=settings.openai_api_key,
@@ -21,133 +20,237 @@ class QdrantService:
         self.qdrant_client = QdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
-            timeout=30  # Added timeout for better reliability
+            timeout=30
         )
         
-        # Cache for vector stores
-        self.vector_stores = {}
-    
-    async def setup_collection(self, company_id: str) -> bool:
-        """Setup or verify company collection exists"""
+        # Dedicated collection name for this application (separate from other apps)
+        self.collection_name = settings.qdrant_collection_name or "voice_agent_documents"
+        
+    async def initialize_collection(self) -> bool:
+        """Initialize the dedicated collection for this application"""
         try:
-            collection_name = f"company_{company_id}"
-            
             # Check if collection exists
             collections = self.qdrant_client.get_collections()
-            collection_exists = any(col.name == collection_name for col in collections.collections)
+            collection_exists = any(
+                col.name == self.collection_name 
+                for col in collections.collections
+            )
             
             if not collection_exists:
-                # Create collection if it doesn't exist
+                logger.info(f"Creating new collection: {self.collection_name}")
+                
+                # Create collection with proper vector configuration
                 self.qdrant_client.create_collection(
-                    collection_name=collection_name,
+                    collection_name=self.collection_name,
                     vectors_config=models.VectorParams(
-                        size=1536,  # For text-embedding-3-small
+                        size=1536,  # text-embedding-3-small dimension
                         distance=models.Distance.COSINE
+                    ),
+                    # Optimize for multi-tenancy within this collection
+                    hnsw_config=models.HnswConfigDiff(
+                        payload_m=16,
+                        m=0
                     )
                 )
                 
-                # Create index for faster filtering
+                # Create indexes for better search performance
+                # Company ID index
                 self.qdrant_client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name="metadata.agent_id",
-                    field_schema="keyword"
+                    collection_name=self.collection_name,
+                    field_name="company_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                    field_index_params=models.KeywordIndexParams(
+                        is_tenant=True  # Optimizes for multi-tenancy
+                    )
                 )
                 
-                logger.info(f"Created collection and index: {collection_name}")
+                # Agent ID index
+                self.qdrant_client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="agent_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD
+                )
+                
+                # Document type index
+                self.qdrant_client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="document_type",
+                    field_schema=models.PayloadSchemaType.KEYWORD
+                )
+                
+                # Document ID index
+                self.qdrant_client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="document_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD
+                )
+                
+                logger.info(f"Created collection: {self.collection_name} with indexes")
+            else:
+                logger.info(f"Using existing collection: {self.collection_name}")
+            
+            # Verify collection
+            collection_info = self.qdrant_client.get_collection(self.collection_name)
+            logger.info(f"Collection info: {collection_info.vectors_count} vectors, {collection_info.indexed_vectors_count} indexed")
             
             return True
             
         except Exception as e:
-            logger.error(f"Error setting up collection: {str(e)}")
+            logger.error(f"Error initializing collection: {str(e)}")
             return False
     
-    async def get_vector_store(self, company_id: str) -> QdrantVectorStore:
-        """Get or create a vector store for a company"""
-        try:
-            collection_name = f"company_{company_id}"
-            
-            # Return cached vector store if available
-            if collection_name in self.vector_stores:
-                return self.vector_stores[collection_name]
-            
-            # Ensure collection exists
-            await self.setup_collection(company_id)
-            
-            # Create vector store
-            vector_store = QdrantVectorStore.from_existing_collection(
-                embedding=self.embeddings,
-                collection_name=collection_name,
-                url=settings.qdrant_url,
-                api_key=settings.qdrant_api_key,
-                content_payload_key="page_content",
-                metadata_payload_key="metadata"
-            )
-            # Cache the vector store
-            self.vector_stores[collection_name] = vector_store
-            return vector_store
-            
-        except Exception as e:
-            logger.error(f"Error getting vector store: {str(e)}")
-            raise
-    
     async def add_points(
-        self, 
-        company_id: str, 
-        points: List[models.PointStruct]
+        self,
+        company_id: str,
+        points: List[models.PointStruct],
+        agent_id: Optional[str] = None
     ) -> bool:
-        """Add points to Qdrant collection"""
+        """Add points to the dedicated collection"""
         try:
-            collection_name = f"company_{company_id}"
+            # Ensure each point has required metadata for filtering
+            for point in points:
+                # Flatten metadata to top level for indexing
+                if "metadata" in point.payload:
+                    metadata = point.payload["metadata"]
+                    point.payload["company_id"] = metadata.get("company_id", company_id)
+                    point.payload["agent_id"] = metadata.get("agent_id", agent_id)
+                    point.payload["document_type"] = metadata.get("document_type", "custom")
+                    point.payload["document_id"] = metadata.get("document_id", "")
+                    point.payload["document_name"] = metadata.get("document_name", "")
+                else:
+                    point.payload["company_id"] = company_id
+                    point.payload["agent_id"] = agent_id
+                    point.payload["document_type"] = "custom"
             
-            # Ensure collection exists
-            await self.setup_collection(company_id)
+            self.qdrant_client.upsert(
+                collection_name=self.collection_name,
+                points=points,
+                wait=True
+            )
             
-            # Add points in smaller batches to avoid 413 errors
-            batch_size = 10  # Reduce from 100 to 10
-            for i in range(0, len(points), batch_size):
-                batch = points[i:i + batch_size]
-                try:
-                    self.qdrant_client.upsert(
-                        collection_name=collection_name,
-                        points=batch,
-                        wait=True
-                    )
-                    logger.info(f"Added batch {i//batch_size + 1}/{(len(points)-1)//batch_size + 1} ({len(batch)} points)")
-                except Exception as batch_e:
-                    logger.error(f"Error adding batch {i//batch_size + 1}: {str(batch_e)}")
-                    # Try with even smaller batches if possible
-                    if len(batch) > 1:
-                        for point in batch:
-                            try:
-                                self.qdrant_client.upsert(
-                                    collection_name=collection_name,
-                                    points=[point],
-                                    wait=True
-                                )
-                                logger.info(f"Added single point after batch failure")
-                            except Exception as point_e:
-                                logger.error(f"Failed to add point: {str(point_e)}")
-            
-            logger.info(f"Added {len(points)} points to {collection_name}")
+            logger.info(f"Added {len(points)} points for company {company_id}, agent {agent_id}")
             return True
             
         except Exception as e:
             logger.error(f"Error adding points: {str(e)}")
             return False
     
-    async def delete_agent_data(self, company_id: str, agent_id: str) -> bool:
-        """Delete all data associated with an agent"""
+    async def search(
+        self,
+        company_id: str,
+        query_vector: List[float],
+        agent_id: Optional[str] = None,
+        document_type: Optional[str] = None,
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Search with company/agent filtering"""
         try:
-            collection_name = f"company_{company_id}"
+            # Build filter conditions
+            must_conditions = [
+                models.FieldCondition(
+                    key="company_id",
+                    match=models.MatchValue(value=company_id)
+                )
+            ]
             
-            # Delete points by filter
+            if agent_id:
+                must_conditions.append(
+                    models.FieldCondition(
+                        key="agent_id",
+                        match=models.MatchValue(value=agent_id)
+                    )
+                )
+            
+            if document_type:
+                must_conditions.append(
+                    models.FieldCondition(
+                        key="document_type",
+                        match=models.MatchValue(value=document_type)
+                    )
+                )
+            
+            # Perform search with filtering
+            results = self.qdrant_client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                query_filter=models.Filter(must=must_conditions),
+                limit=limit,
+                with_payload=True,
+                score_threshold=0.5
+            )
+            
+            logger.info(f"🔍 Found {len(results)} results for company {company_id}, agent {agent_id}")
+            
+            return [
+                {
+                    "id": result.id,
+                    "score": result.score,
+                    "content": result.payload.get("page_content", ""),
+                    "document_name": result.payload.get("document_name", ""),
+                    "metadata": result.payload.get("metadata", {})
+                }
+                for result in results
+            ]
+            
+        except Exception as e:
+            logger.error(f"Error searching: {str(e)}")
+            return []
+    
+    async def delete_document(
+        self, 
+        company_id: str, 
+        document_id: str,
+        agent_id: Optional[str] = None
+    ) -> bool:
+        """Delete all chunks for a specific document"""
+        try:
+            filter_conditions = [
+                models.FieldCondition(
+                    key="company_id",
+                    match=models.MatchValue(value=company_id)
+                ),
+                models.FieldCondition(
+                    key="document_id",
+                    match=models.MatchValue(value=document_id)
+                )
+            ]
+            
+            if agent_id:
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="agent_id",
+                        match=models.MatchValue(value=agent_id)
+                    )
+                )
+            
             self.qdrant_client.delete(
-                collection_name=collection_name,
+                collection_name=self.collection_name,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(must=filter_conditions)
+                )
+            )
+            
+            logger.info(f"Deleted document {document_id} for company {company_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting document: {str(e)}")
+            return False
+    
+    async def delete_agent_data(self, company_id: str, agent_id: str) -> bool:
+        """Delete all data for a specific agent"""
+        try:
+            self.qdrant_client.delete(
+                collection_name=self.collection_name,
                 points_selector=models.FilterSelector(
                     filter=models.Filter(
                         must=[
                             models.FieldCondition(
-                                key="metadata.agent_id",
+                                key="company_id",
+                                match=models.MatchValue(value=company_id)
+                            ),
+                            models.FieldCondition(
+                                key="agent_id",
                                 match=models.MatchValue(value=agent_id)
                             )
                         ]
@@ -155,80 +258,141 @@ class QdrantService:
                 )
             )
             
-            # Clear cache
-            if collection_name in self.vector_stores:
-                del self.vector_stores[collection_name]
-            
-            logger.info(f"Deleted data for agent {agent_id} in collection {collection_name}")
+            logger.info(f"Deleted all data for company {company_id}, agent {agent_id}")
             return True
             
         except Exception as e:
             logger.error(f"Error deleting agent data: {str(e)}")
             return False
     
-    async def get_existing_embeddings(
-        self, 
-        company_id: str, 
-        agent_id: Optional[str] = None
-    ) -> List[Dict]:
-        """Get existing embeddings for a company/agent"""
+    async def delete_company_data(self, company_id: str) -> bool:
+        """Delete all data for a company"""
         try:
-            collection_name = f"company_{company_id}"
-            
-            # Prepare filter
-            search_filter = None
-            if agent_id:
-                search_filter = models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="metadata.agent_id",
-                            match=models.MatchValue(value=agent_id)
-                        )
-                    ]
+            self.qdrant_client.delete(
+                collection_name=self.collection_name,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="company_id",
+                                match=models.MatchValue(value=company_id)
+                            )
+                        ]
+                    )
                 )
-            
-            # Get points
-            response = self.qdrant_client.scroll(
-                collection_name=collection_name,
-                filter=search_filter,
-                limit=100,
-                with_payload=True,
-                with_vectors=True
             )
             
-            return [
-                {
-                    "id": point.id,
-                    "vector": point.vector,
-                    "payload": point.payload
-                }
-                for point in response[0]
-            ]
-            
-        except Exception as e:
-            logger.error(f"Error getting existing embeddings: {str(e)}")
-            return []
-    
-    async def verify_embeddings(self, company_id: str, agent_id: Optional[str] = None) -> bool:
-        """Verify that embeddings exist and are accessible"""
-        try:
-            logger.info(f"Verifying embeddings for company {company_id}, agent {agent_id}")
-            
-            embeddings = await self.get_existing_embeddings(company_id, agent_id)
-            if not embeddings:
-                logger.warning(f"No embeddings found for company {company_id} and agent {agent_id}")
-                return False
-            
-            logger.info(f"Found {len(embeddings)} embeddings")
-            
-            # Verify a sample embedding
-            sample = embeddings[0]
-            if not sample.get('vector') or not sample.get('payload'):
-                logger.error("Invalid embedding format found")
-                return False
-            
+            logger.info(f"Deleted all data for company {company_id}")
             return True
             
         except Exception as e:
-            logger.error(f"Error verifying embeddings: {str(e)}")
+            logger.error(f"Error deleting company data: {str(e)}")
             return False
+    
+    async def get_stats(
+        self, 
+        company_id: Optional[str] = None, 
+        agent_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get statistics for the collection or specific company/agent"""
+        try:
+            # Get overall collection stats
+            collection_info = self.qdrant_client.get_collection(self.collection_name)
+            
+            stats = {
+                "collection_name": self.collection_name,
+                "total_vectors": collection_info.vectors_count,
+                "indexed_vectors": collection_info.indexed_vectors_count,
+                "status": collection_info.status
+            }
+            
+            # If specific company/agent requested, count their vectors
+            if company_id:
+                filter_conditions = [
+                    models.FieldCondition(
+                        key="company_id",
+                        match=models.MatchValue(value=company_id)
+                    )
+                ]
+                
+                if agent_id:
+                    filter_conditions.append(
+                        models.FieldCondition(
+                            key="agent_id",
+                            match=models.MatchValue(value=agent_id)
+                        )
+                    )
+                
+                # Count points using scroll
+                result = self.qdrant_client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=models.Filter(must=filter_conditions),
+                    limit=10000,
+                    with_payload=False,
+                    with_vectors=False
+                )
+                
+                stats["company_id"] = company_id
+                stats["agent_id"] = agent_id
+                stats["company_vectors"] = len(result[0])
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting stats: {str(e)}")
+            return {}
+    
+    async def list_documents(
+        self, 
+        company_id: str, 
+        agent_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List all unique documents for a company/agent"""
+        try:
+            filter_conditions = [
+                models.FieldCondition(
+                    key="company_id",
+                    match=models.MatchValue(value=company_id)
+                )
+            ]
+            
+            if agent_id:
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="agent_id",
+                        match=models.MatchValue(value=agent_id)
+                    )
+                )
+            
+            # Scroll through all points to get unique documents
+            result = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=models.Filter(must=filter_conditions),
+                limit=10000,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            # Extract unique documents
+            documents = {}
+            for point in result[0]:
+                doc_id = point.payload.get("document_id")
+                if doc_id and doc_id not in documents:
+                    documents[doc_id] = {
+                        "document_id": doc_id,
+                        "document_name": point.payload.get("document_name", ""),
+                        "document_type": point.payload.get("document_type", ""),
+                        "chunk_count": 0
+                    }
+                if doc_id:
+                    documents[doc_id]["chunk_count"] += 1
+            
+            return list(documents.values())
+            
+        except Exception as e:
+            logger.error(f"Error listing documents: {str(e)}")
+            return []
+
+
+# Global instance
+qdrant_service = QdrantService()

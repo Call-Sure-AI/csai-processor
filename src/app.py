@@ -28,6 +28,7 @@ from routes.webrtc_elevenlabs_routes import router as webrtc_elevenlabs_router, 
 from routes.elevenlabs_twilio_websocket_routes import router as elevenlabs_twilio_websocket_router
 from routes.s3 import router as s3_router
 from routes.campaign_routes import router as campaign_router
+from routes.document_routes import router as document_router
 
 # Configure logging
 logging.basicConfig(
@@ -130,6 +131,7 @@ def create_app() -> FastAPI:
                 "timestamp": asyncio.get_event_loop().time()
             }
 
+    app.include_router(document_router, prefix="/api/v1/documents", tags=["documents"])
     # Include WebRTC routes
     app.include_router(webrtc_router, prefix="/api/v1/webrtc", tags=["WebRTC"])
 
