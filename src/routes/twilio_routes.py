@@ -193,8 +193,8 @@ async def handle_gather_callback(
         speech_result = form_data.get("SpeechResult")
         digits = form_data.get("Digits")
         
-        company_api_key = request.query_params.get("company_key") or settings.default_company_api_key
-        agent_id = request.query_params.get("agent_id") or settings.default_agent_id
+        company_id = request.query_params.get("company_id", "43aacf2b-d8e8-4ece-a75c-43a66100842c")
+        agent_id = request.query_params.get("agent_id", "63741786-d82f-446d-894f-ec6ab2b50654")
         voice = request.query_params.get("voice", "alice")
         language = request.query_params.get("language", "en-US")
         
