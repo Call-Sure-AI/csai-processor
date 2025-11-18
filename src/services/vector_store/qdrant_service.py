@@ -16,7 +16,10 @@ class QdrantService:
             openai_api_key=settings.openai_api_key,
             client=None
         )
-        
+        qdrant_host = getattr(settings, 'QDRANT_HOST', 'localhost')
+        qdrant_port = getattr(settings, 'QDRANT_PORT', 6333)
+        qdrant_url = f"http://{qdrant_host}:{qdrant_port}"
+
         self.qdrant_client = QdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
