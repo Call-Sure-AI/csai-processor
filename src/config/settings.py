@@ -114,6 +114,7 @@ class Settings(BaseSettings):
     claude_api_key: Optional[str] = Field(default=None, env="CLAUDE_API_KEY")
     deepgram_api_key: Optional[str] = Field(default=None, env="DEEPGRAM_API_KEY")
     eleven_labs_api_key: Optional[str] = Field(default=None, env="ELEVEN_LABS_API_KEY")
+    elevenlabs_voice_id: str = Field(default="21m00Tcm4TlvDq8ikWAM", env="ELEVENLABS_VOICE_ID")
     voice_id: Optional[str] = Field(default=None, env="VOICE_ID")
     
     # Twilio

@@ -172,7 +172,7 @@ class QdrantService:
                 score_threshold=0.3
             )
             
-            logger.info(f"🔍 Found {len(results)} results for company {company_id}, agent {agent_id}")
+            logger.info(f"Found {len(results)} results for company {company_id}, agent {agent_id}")
 
             if results:
                 top = results[0]
