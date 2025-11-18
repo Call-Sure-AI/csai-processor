@@ -22,7 +22,7 @@ transformers>=4.35.0
 
 # LangChain
 langchain-community>=0.0.10
-langchain-core==0.3.21
+langchain-core>=0.3.27
 langchain-openai==0.2.14
 langchain-text-splitters==0.3.4
 langchain-qdrant==0.2.0
