@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime
 from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from qdrant_client import models
 from fastapi import UploadFile

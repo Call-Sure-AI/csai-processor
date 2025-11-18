@@ -220,6 +220,7 @@ def create_app() -> FastAPI:
 async def startup_event():
     """Initialize application on startup"""
     global connection_manager, background_worker, conversation_manager, agent_manager, webrtc_manager, vector_store, rag_service, message_processor
+    qdrant_service = QdrantService()
     
     try:
         await qdrant_service.initialize_collection()
