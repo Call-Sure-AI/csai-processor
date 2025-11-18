@@ -217,7 +217,7 @@ async def handle_gather_callback(
             except Exception as e:
                 logger.error(f"Error saving user turn: {str(e)}")
             
-            company = db.query(Company).filter(Company.api_key == company_api_key).first()
+            #company = db.query(Company).filter(Company.api_key == company_api_key).first()
             company_id = company.id if company else "default"
 
             if conversation_manager:
@@ -286,10 +286,10 @@ async def create_outbound_call(
         data = await request.json()
         to_number = data.get("to_number")
         from_number = data.get("from_number")
-        company_api_key = data.get("company_api_key")
+        company_id = data.get("company_id")
         agent_id = data.get("agent_id")
         
-        if not all([to_number, company_api_key, agent_id]):
+        if not all([to_number, company_id, agent_id]):
             raise HTTPException(status_code=400, detail="Missing required parameters")
         
         # Create webhook URL for call handling
@@ -317,7 +317,7 @@ async def create_outbound_call(
             webhook_url=webhook_url,
             status_callback_url=status_callback_url,
             metadata={
-                'company_api_key': company_api_key,
+                'company_id': company_id,
                 'agent_id': agent_id
             }
         )
