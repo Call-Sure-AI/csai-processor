@@ -222,6 +222,9 @@ async def startup_event():
     global connection_manager, background_worker, conversation_manager, agent_manager, webrtc_manager, vector_store, rag_service, message_processor
     
     try:
+        await qdrant_service.initialize_collection()
+        logger.info("Qdrant collection initialized")
+
         logger.info("Starting CSAI Processor...")
         
         # Initialize database

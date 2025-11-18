@@ -176,103 +176,101 @@ async def handle_call_status(
         logger.error(f"Error handling call status: {str(e)}")
         return Response(content="Error", media_type="text/plain", status_code=500)
     
-    @router.post("/gather-callback")
-    async def handle_gather_callback(
-        request: Request,
-        twilio_service: TwilioVoiceService = Depends(get_twilio_service),
-        db: Session = Depends(get_db)
-    ):
-        """Handle user input from Gather verb with RAG integration"""
-        try:
-            form_data = await request.form()
-            call_sid = form_data.get("CallSid")
-            speech_result = form_data.get("SpeechResult")
-            digits = form_data.get("Digits")
+@router.post("/gather-callback")
+async def handle_gather_callback(
+    request: Request,
+    twilio_service: TwilioVoiceService = Depends(get_twilio_service),
+    db: Session = Depends(get_db)
+):
+    """Handle user input from Gather verb with RAG integration"""
+    try:
+        form_data = await request.form()
+        call_sid = form_data.get("CallSid")
+        speech_result = form_data.get("SpeechResult")
+        digits = form_data.get("Digits")
+        
+        company_api_key = request.query_params.get("company_key") or settings.default_company_api_key
+        agent_id = request.query_params.get("agent_id") or settings.default_agent_id
+        voice = request.query_params.get("voice", "alice")
+        language = request.query_params.get("language", "en-US")
+        
+        logger.info(f"Gather callback for call {call_sid}: speech='{speech_result}'")
+        
+        conversation_manager = conversation_managers.get(call_sid)
+        
+        from twilio.twiml.voice_response import VoiceResponse, Gather
+        response = VoiceResponse()
+        
+        if speech_result:
+            try:
+                db.add(ConversationTurn(
+                    call_sid=call_sid,
+                    role="user",
+                    content=speech_result,
+                    created_at=datetime.utcnow()
+                ))
+                db.commit()
+            except Exception as e:
+                logger.error(f"Error saving user turn: {str(e)}")
             
-            # Get company and agent info
-            company_api_key = request.query_params.get("company_key") or settings.default_company_api_key
-            agent_id = request.query_params.get("agent_id") or settings.default_agent_id
-            voice = request.query_params.get("voice", "alice")
-            language = request.query_params.get("language", "en-US")
-            
-            logger.info(f"Gather callback for call {call_sid}: speech='{speech_result}'")
-            
-            conversation_manager = conversation_managers.get(call_sid)
-            
-            from twilio.twiml.voice_response import VoiceResponse, Gather
-            response = VoiceResponse()
-            
-            if speech_result:
-                try:
-                    db.add(ConversationTurn(
-                        call_sid=call_sid,
-                        role="user",
-                        content=speech_result,
-                        created_at=datetime.utcnow()
-                    ))
-                    db.commit()
-                except Exception as e:
-                    logger.error(f"Error saving user turn: {str(e)}")
-                
-                company = db.query(Company).filter(Company.api_key == company_api_key).first()
-                company_id = company.id if company else "default"
-                
-                if conversation_manager:
-                    try:
-                        logger.info(f"🔍 Querying RAG for company {company_id}, agent {agent_id}")
-                        
-                        llm_response = await conversation_manager.process_user_input_with_rag(
-                            call_sid=call_sid,
-                            user_input=speech_result,
-                            company_id=company_id,
-                            agent_id=agent_id
-                        )
-                        
-                        logger.info(f"RAG response: {llm_response[:100]}...")
-                        
-                        try:
-                            db.add(ConversationTurn(
-                                call_sid=call_sid,
-                                role="assistant",
-                                content=llm_response,
-                                created_at=datetime.utcnow()
-                            ))
-                            db.commit()
-                        except Exception as e:
-                            logger.error(f"Error saving assistant turn: {str(e)}")
-                        
-                        gather = Gather(
-                            input='speech dtmf',
-                            timeout=15,
-                            speech_timeout='auto',
-                            action=f'/api/v1/twilio/gather-callback?company_key={company_api_key}&agent_id={agent_id}&voice={voice}&language={language}',
-                            method='POST',
-                            speech_model='phone_call',
-                            enhanced='true'
-                        )
-                        gather.say(llm_response, voice=voice, language=language)
-                        response.append(gather)
-                        
-                        response.say("I didn't hear anything. Please try again or say goodbye to end the call.", voice=voice, language=language)
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing with RAG: {str(e)}")
-                        response.say("I'm having trouble accessing my knowledge base. Please try again.", voice=voice, language=language)
-                else:
-                    response.say(f"You said: {speech_result}. Thank you for your input!", voice=voice, language=language)
-            
-            else:
-                response.say("I didn't receive any input. Please speak clearly.", voice=voice, language=language)
-            
-            return Response(content=str(response), media_type="application/xml")
-            
-        except Exception as e:
-            logger.error(f"Error handling gather callback: {str(e)}")
-            from twilio.twiml.voice_response import VoiceResponse
-            response = VoiceResponse()
-            response.say("An error occurred. Goodbye!", voice="alice", language="en-US")
-            return Response(content=str(response), media_type="application/xml")
+            company = db.query(Company).filter(Company.api_key == company_api_key).first()
+            company_id = company.id if company else "default"
 
+            if conversation_manager:
+                try:
+                    logger.info(f"Querying RAG for company {company_id}, agent {agent_id}")
+                    
+                    llm_response = await conversation_manager.process_user_input_with_rag(
+                        call_sid=call_sid,
+                        user_input=speech_result,
+                        company_id=company_id,
+                        agent_id=agent_id
+                    )
+                    
+                    logger.info(f"RAG response: {llm_response[:100]}...")
+                    
+                    try:
+                        db.add(ConversationTurn(
+                            call_sid=call_sid,
+                            role="assistant",
+                            content=llm_response,
+                            created_at=datetime.utcnow()
+                        ))
+                        db.commit()
+                    except Exception as e:
+                        logger.error(f"Error saving assistant turn: {str(e)}")
+                    
+                    gather = Gather(
+                        input='speech dtmf',
+                        timeout=15,
+                        speech_timeout='auto',
+                        action=f'/api/v1/twilio/gather-callback?company_key={company_api_key}&agent_id={agent_id}&voice={voice}&language={language}',
+                        method='POST',
+                        speech_model='phone_call',
+                        enhanced='true'
+                    )
+                    gather.say(llm_response, voice=voice, language=language)
+                    response.append(gather)
+                    
+                    response.say("I didn't hear anything. Please try again or say goodbye to end the call.", voice=voice, language=language)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing with RAG: {str(e)}")
+                    response.say("I'm having trouble accessing my knowledge base. Please try again.", voice=voice, language=language)
+            else:
+                response.say(f"You said: {speech_result}. Thank you for your input!", voice=voice, language=language)
+        
+        else:
+            response.say("I didn't receive any input. Please speak clearly.", voice=voice, language=language)
+        
+        return Response(content=str(response), media_type="application/xml")
+        
+    except Exception as e:
+        logger.error(f"Error handling gather callback: {str(e)}")
+        from twilio.twiml.voice_response import VoiceResponse
+        response = VoiceResponse()
+        response.say("An error occurred. Goodbye!", voice="alice", language="en-US")
+        return Response(content=str(response), media_type="application/xml")
 
 @router.post("/outbound-call")
 async def create_outbound_call(
