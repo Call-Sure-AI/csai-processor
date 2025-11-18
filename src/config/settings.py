@@ -45,8 +45,12 @@ class Settings(BaseSettings):
     qdrant_api_key: Optional[str] = Field(default=None, env="QDRANT_API_KEY")
     qdrant_host: str = Field(default="localhost", env="QDRANT_HOST")
     qdrant_port: int = Field(default=6333, env="QDRANT_PORT")
-    qdrant_url = f"http://{qdrant_host}:{qdrant_port}"
     qdrant_collection_name: str = Field(env="QDRANT_COLLECTION_NAME")
+
+    @property
+    def qdrant_url(self) -> str:
+        """Construct Qdrant URL from host and port"""
+        return f"http://{self.qdrant_host}:{self.qdrant_port}"
     
     # OpenAI
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
