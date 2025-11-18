@@ -41,8 +41,11 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379", env="REDIS_DB_URL")
     
     # Vector Store
-    qdrant_url: str = Field(default="http://localhost:6333", env="QDRANT_URL")
+    #qdrant_url: str = Field(default="http://localhost:6333", env="QDRANT_URL")
     qdrant_api_key: Optional[str] = Field(default=None, env="QDRANT_API_KEY")
+    qdrant_host = getattr(settings, 'QDRANT_HOST', 'localhost')
+    qdrant_port = getattr(settings, 'QDRANT_PORT', 6333)
+    qdrant_url = f"http://{qdrant_host}:{qdrant_port}"
     qdrant_collection_name: str = Field(env="QDRANT_COLLECTION_NAME")
     
     # OpenAI

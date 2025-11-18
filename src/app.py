@@ -221,8 +221,12 @@ async def startup_event():
     """Initialize application on startup"""
     global connection_manager, background_worker, conversation_manager, agent_manager, webrtc_manager, vector_store, rag_service, message_processor
     qdrant_service = QdrantService()
-    
+
     try:
+        logger.info(f"Qdrant Host: {settings.qdrant_host}")
+        logger.info(f"Qdrant Port: {settings.qdrant_port}")
+        logger.info(f"Qdrant URL: {settings.qdrant_url}")
+        logger.info(f"Qdrant Collection: {settings.qdrant_collection_name}")
         await qdrant_service.initialize_collection()
         logger.info("Qdrant collection initialized")
 
