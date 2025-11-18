@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # Vector Store
     qdrant_url: str = Field(default="http://localhost:6333", env="QDRANT_URL")
     qdrant_api_key: Optional[str] = Field(default=None, env="QDRANT_API_KEY")
+    qdrant_collection_name: str = Field(env="QDRANT_COLLECTION_NAME")
     
     # OpenAI
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
