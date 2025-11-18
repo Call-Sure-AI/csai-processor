@@ -137,7 +137,7 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Error adding points: {str(e)}")
             return False
-    
+
     async def search(
         self,
         company_id: str,
@@ -146,9 +146,8 @@ class QdrantService:
         document_type: Optional[str] = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
-        """Search with company/agent filtering"""
+        """Search with filtering"""
         try:
-            # Build filter conditions
             must_conditions = [
                 models.FieldCondition(
                     key="company_id",
@@ -163,26 +162,22 @@ class QdrantService:
                         match=models.MatchValue(value=agent_id)
                     )
                 )
-            
-            if document_type:
-                must_conditions.append(
-                    models.FieldCondition(
-                        key="document_type",
-                        match=models.MatchValue(value=document_type)
-                    )
-                )
-            
-            # Perform search with filtering
+
             results = self.qdrant_client.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
                 query_filter=models.Filter(must=must_conditions),
                 limit=limit,
                 with_payload=True,
-                score_threshold=0.5
+                score_threshold=0.3
             )
             
             logger.info(f"🔍 Found {len(results)} results for company {company_id}, agent {agent_id}")
+
+            if results:
+                top = results[0]
+                logger.info(f"Top result: score={top.score:.3f}, doc={top.payload.get('document_name', 'Unknown')}")
+                logger.info(f"Content preview: {top.payload.get('page_content', '')[:100]}...")
             
             return [
                 {
@@ -197,48 +192,51 @@ class QdrantService:
             
         except Exception as e:
             logger.error(f"Error searching: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
-    
-    async def delete_document(
-        self, 
-        company_id: str, 
-        document_id: str,
-        agent_id: Optional[str] = None
-    ) -> bool:
-        """Delete all chunks for a specific document"""
-        try:
-            filter_conditions = [
-                models.FieldCondition(
-                    key="company_id",
-                    match=models.MatchValue(value=company_id)
-                ),
-                models.FieldCondition(
-                    key="document_id",
-                    match=models.MatchValue(value=document_id)
-                )
-            ]
-            
-            if agent_id:
-                filter_conditions.append(
+
+        
+        async def delete_document(
+            self, 
+            company_id: str, 
+            document_id: str,
+            agent_id: Optional[str] = None
+        ) -> bool:
+            """Delete all chunks for a specific document"""
+            try:
+                filter_conditions = [
                     models.FieldCondition(
-                        key="agent_id",
-                        match=models.MatchValue(value=agent_id)
+                        key="company_id",
+                        match=models.MatchValue(value=company_id)
+                    ),
+                    models.FieldCondition(
+                        key="document_id",
+                        match=models.MatchValue(value=document_id)
+                    )
+                ]
+                
+                if agent_id:
+                    filter_conditions.append(
+                        models.FieldCondition(
+                            key="agent_id",
+                            match=models.MatchValue(value=agent_id)
+                        )
+                    )
+                
+                self.qdrant_client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=models.FilterSelector(
+                        filter=models.Filter(must=filter_conditions)
                     )
                 )
-            
-            self.qdrant_client.delete(
-                collection_name=self.collection_name,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(must=filter_conditions)
-                )
-            )
-            
-            logger.info(f"Deleted document {document_id} for company {company_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error deleting document: {str(e)}")
-            return False
+                
+                logger.info(f"Deleted document {document_id} for company {company_id}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error deleting document: {str(e)}")
+                return False
     
     async def delete_agent_data(self, company_id: str, agent_id: str) -> bool:
         """Delete all data for a specific agent"""
