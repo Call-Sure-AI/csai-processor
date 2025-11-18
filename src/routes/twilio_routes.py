@@ -72,8 +72,10 @@ async def handle_incoming_call(
             # Continue with the request even if validation fails
         
         # Get company and agent info from query params or headers
-        company_api_key = request.query_params.get("company_key") or settings.default_company_api_key or "default"
-        agent_id = request.query_params.get("agent_id") or settings.default_agent_id or "default"
+        company_id = request.query_params.get("company_id", "43aacf2b-d8e8-4ece-a75c-43a66100842c")
+        agent_id = request.query_params.get("agent_id", "63741786-d82f-446d-894f-ec6ab2b50654")
+
+        logger.info(f"Incoming call: company_id={company_id}, agent_id={agent_id}")
         
         # Create conversation manager for this call
         agent_config = {
