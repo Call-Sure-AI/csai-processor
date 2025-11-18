@@ -83,7 +83,7 @@ async def handle_incoming_call(
             "voice": voice,
             "language": language,
             "call_type": "support",
-            "company_key": company_api_key,
+            "company_id": company_id,
             "agent_id": agent_id
         }
         
@@ -112,7 +112,7 @@ async def handle_incoming_call(
                 input='speech dtmf',
                 timeout=15,  # Increased timeout
                 speech_timeout='auto',  # Auto speech timeout
-                action=f'/api/v1/twilio/gather-callback?company_key={company_api_key}&agent_id={agent_id}',
+                action=f'/api/v1/twilio/gather-callback?company_id={company_id}&agent_id={agent_id}',
                 method='POST',
                 speech_model='phone_call',  # Optimized for phone calls
                 enhanced='true'  # Enhanced speech recognition
@@ -248,7 +248,7 @@ async def handle_gather_callback(
                         input='speech dtmf',
                         timeout=15,
                         speech_timeout='auto',
-                        action=f'/api/v1/twilio/gather-callback?company_key={company_api_key}&agent_id={agent_id}&voice={voice}&language={language}',
+                        action=f'/api/v1/twilio/gather-callback?company_id={company_id}&agent_id={agent_id}&voice={voice}&language={language}',
                         method='POST',
                         speech_model='phone_call',
                         enhanced='true'
@@ -307,7 +307,7 @@ async def create_outbound_call(
             else:
                 base_url = f"https://{host}"
             
-        webhook_url = f"{base_url}/api/v1/twilio/incoming-call?company_key={company_api_key}&agent_id={agent_id}"
+        webhook_url = f"{base_url}/api/v1/twilio/incoming-call?company_id={company_id}&agent_id={agent_id}"
         status_callback_url = f"{base_url}/api/v1/twilio/call-status"
         
         # Create the call
