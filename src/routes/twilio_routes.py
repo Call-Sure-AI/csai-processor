@@ -89,7 +89,9 @@ async def handle_incoming_call(
         conversation_managers[call_sid] = conversation_manager
         
         # Start the conversation
-        greeting = await conversation_manager.start_call(call_sid)
+        #greeting = await conversation_manager.start_call(call_sid)
+        
+        greeting = "Thank you for calling Callsure. How may I help you?"
         
         # Use the greeting from LLM if no initial message provided
         if not initial_message:
