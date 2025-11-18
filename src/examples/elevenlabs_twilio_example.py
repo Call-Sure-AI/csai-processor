@@ -309,7 +309,7 @@ async def run_voice_management_example():
             logger.info("")
         
         # Validate specific voice IDs
-        test_voice_ids = ["IKne3meq5aSn9XLyUdCD", "invalid-voice-id"]
+        test_voice_ids = ["EXAVITQu4vr4xnSDxMaL", "invalid-voice-id"]
         
         for voice_id in test_voice_ids:
             validation = await example.validate_voice_id(voice_id)
