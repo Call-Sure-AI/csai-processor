@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="your-secret-key-change-in-production", env="SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
     jwt_expiration: int = Field(default=3600, env="JWT_EXPIRATION")  # 1 hour
+    callsure_api_token: str = Field(..., env="CALLSURE_API_TOKEN")
     
     # Background Tasks
     background_worker_enabled: bool = Field(default=True, env="BACKGROUND_WORKER_ENABLED")
