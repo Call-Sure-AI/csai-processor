@@ -13,7 +13,7 @@ class ElevenLabsTTSService:
     
     def __init__(self):
         self.client = ElevenLabs(api_key=settings.eleven_labs_api_key)
-        self.voice_id = settings.elevenlabs_voice_id or "21m00Tcm4TlvDq8ikWAM"
+        self.voice_id = settings.eleven_labs_voice_id or "21m00Tcm4TlvDq8ikWAM"
         logger.info("ElevenLabs TTS initialized")
     
     async def generate(self, text: str) -> AsyncGenerator[str, None]:
