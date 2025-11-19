@@ -1,12 +1,15 @@
-from fastapi import APIRouter, Request, Form, HTTPException, Depends
+from fastapi import APIRouter, Request, Form, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from typing import Dict, Any, Optional
 import logging
 import json
 import asyncio
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 from datetime import datetime
-
+from services.speech.deepgram_ws_service import DeepgramWebSocketService
+from services.voice.elevenlabs_service import ElevenLabsVoiceService
 from services.voice.twilio_service import TwilioVoiceService
+from services.rag.rag_service import get_rag_service
 from services.llm_service import llm_service
 from services.speech.conversation_manager_service import create_conversation_manager
 from managers.connection_manager import ConnectionManager
@@ -102,7 +105,6 @@ async def handle_incoming_call(
         logger.info(f"Handling incoming call {call_sid} from {from_number} with greeting: {initial_message}")
         
         # Generate TwiML response with Gather for user input
-        from twilio.twiml.voice_response import VoiceResponse, Gather
         
         response = VoiceResponse()
         
@@ -132,7 +134,6 @@ async def handle_incoming_call(
     except Exception as e:
         logger.error(f"Error handling incoming call: {str(e)}")
         # Return a simple error TwiML instead of HTTP 500
-        from twilio.twiml.voice_response import VoiceResponse
         response = VoiceResponse()
         response.say("An application error has occurred. Please try again later.", voice="alice", language="en-US")
         return Response(content=str(response), media_type="application/xml")
@@ -201,7 +202,6 @@ async def handle_gather_callback(
         logger.info(f"Gather callback - Call: {call_sid}, Speech: '{speech_result}'")
         logger.info(f"Using company_id={company_id}, agent_id={agent_id}")
         
-        from twilio.twiml.voice_response import VoiceResponse, Gather
         response = VoiceResponse()
         
         if speech_result:
@@ -218,7 +218,6 @@ async def handle_gather_callback(
                 # Query RAG
                 logger.info(f"Querying RAG for: '{speech_result}'")
                 
-                from services.rag.rag_service import get_rag_service
                 rag = get_rag_service()
                 
                 response_chunks = []
@@ -272,7 +271,6 @@ async def handle_gather_callback(
         import traceback
         logger.error(traceback.format_exc())
         
-        from twilio.twiml.voice_response import VoiceResponse
         response = VoiceResponse()
         response.say("An error occurred. Goodbye!", voice="alice", language="en-US")
         return Response(content=str(response), media_type="application/xml")
@@ -499,7 +497,6 @@ async def get_active_conversations():
 async def test_gather():
     """Test Gather TwiML generation"""
     try:
-        from twilio.twiml.voice_response import VoiceResponse, Gather
         
         response = VoiceResponse()
         
@@ -527,7 +524,6 @@ async def test_gather():
 async def test_simple_gather():
     """Simple test for Gather without conversation management"""
     try:
-        from twilio.twiml.voice_response import VoiceResponse, Gather
         
         response = VoiceResponse()
         
@@ -561,8 +557,6 @@ async def simple_gather_callback(request: Request):
         digits = form_data.get("Digits")
         confidence = form_data.get("Confidence")
         
-        from twilio.twiml.voice_response import VoiceResponse
-        
         response = VoiceResponse()
         
         if speech_result:
@@ -576,7 +570,7 @@ async def simple_gather_callback(request: Request):
         
     except Exception as e:
         logger.error(f"Simple gather callback failed: {str(e)}")
-        from twilio.twiml.voice_response import VoiceResponse
+
         response = VoiceResponse()
         response.say("Error occurred during test.", voice="alice", language="en-US")
         return Response(content=str(response), media_type="application/xml")

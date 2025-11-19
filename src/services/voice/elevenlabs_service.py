@@ -12,6 +12,7 @@ import httpx
 from pydub import AudioSegment
 import io
 from config.settings import settings
+from elevenlabs import ElevenLabs, VoiceSettings
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class ElevenLabsVoiceService:
     """ElevenLabs Voice API service for Twilio integration"""
     
     def __init__(self):
+        self.client = ElevenLabs(api_key=settings.eleven_labs_api_key)
         self.api_key = settings.eleven_labs_api_key
         self.voice_id = settings.voice_id or "IKne3meq5aSn9XLyUdCD"  # Default voice
         self.base_url = "https://api.elevenlabs.io/v1"
@@ -47,7 +49,55 @@ class ElevenLabsVoiceService:
         # Validate configuration
         if not self.api_key:
             logger.warning("ElevenLabs API key is not set. Voice services will not work.")
-    
+
+    async def generate(self, text: str) -> AsyncGenerator[str, None]:
+        """Stream audio chunks in real-time"""
+        if not text or not text.strip():
+            return
+        
+        logger.info(f"🎤 Streaming: '{text[:50]}...'")
+        
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Stream audio with minimal latency
+            audio_generator = self.client.text_to_speech.stream(
+                text=text,
+                voice_id=self.voice_id,
+                model_id="eleven_turbo_v2_5",  # Fastest model
+                output_format="ulaw_8000",      # Twilio format
+                voice_settings=VoiceSettings(
+                    stability=0.65,
+                    similarity_boost=0.85,
+                    style=0.2,
+                    use_speaker_boost=True
+                )
+            )
+            
+            chunk_count = 0
+            
+            def get_next_chunk():
+                try:
+                    return next(audio_generator)
+                except StopIteration:
+                    return None
+            
+            # Stream chunks immediately as they arrive
+            while True:
+                chunk = await loop.run_in_executor(None, get_next_chunk)
+                if chunk is None:
+                    break
+                
+                if chunk:
+                    audio_b64 = base64.b64encode(chunk).decode('ascii')
+                    chunk_count += 1
+                    yield audio_b64
+            
+            logger.info(f"✓ Streamed {chunk_count} chunks")
+            
+        except Exception as e:
+            logger.error(f"Streaming error: {str(e)}")
+               
     async def initialize(self):
         """Initialize the ElevenLabs service"""
         if not self.api_key:

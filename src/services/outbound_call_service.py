@@ -112,7 +112,7 @@ class OutboundCallService:
             
             # Create TwiML URL
             twiml_url = (
-                f"{self.base_url}/api/v1/outbound/connect?"
+                f"{self.base_url}/api/v1/twilio-elevenlabs/outbound-connect?"
                 f"campaign_id={campaign_id}&"
                 f"agent_id={agent_id}&"
                 f"company_id={company_id}&"
