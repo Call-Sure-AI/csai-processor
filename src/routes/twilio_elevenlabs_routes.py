@@ -1,28 +1,27 @@
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from database.config import get_db
+from database.config import SessionLocal
 from database.models import ConversationTurn
 from services.speech.deepgram_ws_service import DeepgramWebSocketService
 from services.voice.elevenlabs_service import elevenlabs_service
 from services.rag.rag_service import get_rag_service
-from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+from twilio.twiml.voice_response import VoiceResponse, Connect
 from datetime import datetime
 from config.settings import settings
 import logging
 import json
 import asyncio
 
-
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"])
 
+# Active call context
+call_context = {}
+
 @router.post("/incoming-call")
-async def handle_incoming_call_elevenlabs(
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Incoming call handler with ElevenLabs via Media Streams"""
+async def handle_incoming_call_elevenlabs(request: Request):
+    """Incoming call handler with ElevenLabs via WebSocket"""
     try:
         form_data = await request.form()
         call_sid = form_data.get("CallSid")
@@ -32,80 +31,116 @@ async def handle_incoming_call_elevenlabs(
         company_id = request.query_params.get("company_id")
         agent_id = request.query_params.get("agent_id")
         
-        logger.info(f"📞 INCOMING CALL - CallSid: {call_sid}")
-        logger.info(f"   From: {from_number}, To: {to_number}")
-        logger.info(f"   Company: {company_id}, Agent: {agent_id}")
+        logger.info(f"INCOMING CALL - CallSid: {call_sid}")
+        logger.info(f"From: {from_number}, To: {to_number}")
+        logger.info(f"Company: {company_id}, Agent: {agent_id}")
         
         # Generate TwiML response
         response = VoiceResponse()
-        
-        # Start with a pause to let connection stabilize
         response.pause(length=1)
         
         # Connect to Media Stream
         connect = Connect()
-        
-        # Build WebSocket URL
         ws_domain = settings.base_url.replace('https://', '').replace('http://', '')
-        stream_url = f"wss://{ws_domain}/api/v1/twilio-elevenlabs/media-stream?call_sid={call_sid}&company_id={company_id}&agent_id={agent_id}"
+
+        call_context[call_sid] = {
+            "company_id": company_id,
+            "agent_id": agent_id,
+            "from_number": from_number,
+            "to_number": to_number
+        }
         
-        logger.info(f"📡 Stream URL: {stream_url}")
+        stream_url = f"wss://{ws_domain}/api/v1/twilio-elevenlabs/media-stream?call_sid={call_sid}"
         
-        # Add the Stream noun
-        stream = Stream(url=stream_url)
-        connect.append(stream)
+        logger.info(f"Stream URL: {stream_url}")
+        
+        connect.stream(url=stream_url)
         response.append(connect)
         
         twiml_str = str(response)
-        logger.info(f"📋 TwiML Response:\n{twiml_str}")
+        logger.info(f"TwiML Response:\n{twiml_str}")
         
         return Response(content=twiml_str, media_type="application/xml")
         
     except Exception as e:
-        logger.error(f"❌ Error in incoming call: {str(e)}")
+        logger.error(f"Error: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
         
         response = VoiceResponse()
-        response.say("An error occurred. Please try again later.", voice="Polly.Joanna")
+        response.say("An error occurred. Please try again.", voice="Polly.Joanna")
         return Response(content=str(response), media_type="application/xml")
 
 @router.websocket("/media-stream")
-async def handle_media_stream(
-    websocket: WebSocket,
-    call_sid: str = Query(None),
-    company_id: str = Query(None),
-    agent_id: str = Query(None)
-):
-    """Handle bidirectional audio streaming"""
-    
-    logger.info(f"🔌 WebSocket connection attempt - CallSid: {call_sid}, Company: {company_id}, Agent: {agent_id}")
-    
-    # ✅ Validate parameters
-    if not call_sid or not company_id or not agent_id:
-        logger.error(f"❌ Missing parameters: call_sid={call_sid}, company_id={company_id}, agent_id={agent_id}")
-        await websocket.close(code=1008, reason="Missing required parameters")
-        return
-    
+async def handle_media_stream(websocket: WebSocket):
+
     try:
-        # Accept the connection
+        logger.info("🔌 WebSocket connection attempt...")
         await websocket.accept()
-        logger.info(f"✅ WebSocket ACCEPTED - CallSid: {call_sid}")
+        logger.info("WebSocket ACCEPTED")
         
     except Exception as e:
-        logger.error(f"❌ Failed to accept WebSocket: {str(e)}")
+        logger.error(f"Failed to accept WebSocket: {str(e)}")
         return
-
-    from database.config import SessionLocal
-    db = SessionLocal()
     
+    call_sid = websocket.query_params.get("call_sid")
+    logger.info(f"Query params: {dict(websocket.query_params)}")
+    
+    first_message_data = None
+    
+    if not call_sid:
+        logger.info("No call_sid in query, waiting for Twilio 'start' event...")
+        
+        try:
+            # Wait for Twilio to send the 'start' event
+            for attempt in range(3):
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+                data = json.loads(message)
+                event_type = data.get("event")
+                
+                logger.info(f"Received event #{attempt + 1}: {event_type}")
+                
+                if event_type == "connected":
+                    logger.info("Received 'connected' event")
+                    continue
+                    
+                elif event_type == "start":
+                    call_sid = data.get("start", {}).get("callSid")
+                    first_message_data = data
+                    logger.info(f"Extracted call_sid: {call_sid}")
+                    break
+                    
+        except asyncio.TimeoutError:
+            logger.error("Timeout waiting for start event")
+            await websocket.close(code=1008)
+            return
+        except Exception as e:
+            logger.error(f"Error receiving messages: {str(e)}")
+            await websocket.close(code=1011)
+            return
+    
+    if not call_sid:
+        logger.error("Could not obtain call_sid")
+        await websocket.close(code=1008)
+        return
+    
+    logger.info(f"Call SID validated: {call_sid}")
+    
+    # Get context from stored data
+    context = call_context.get(call_sid, {})
+    company_id = context.get("company_id")
+    agent_id = context.get("agent_id")
+    
+    logger.info(f"Context - Company: {company_id}, Agent: {agent_id}")
+    
+    # Initialize services
+    db = SessionLocal()
     deepgram_service = DeepgramWebSocketService()
     rag = get_rag_service()
     
     stream_sid = None
     is_agent_speaking = False
     greeting_sent = False
-    call_started = False
     
     try:
         # Deepgram transcript callback
@@ -113,10 +148,9 @@ async def handle_media_stream(
             nonlocal is_agent_speaking
             
             if is_agent_speaking or not transcript.strip():
-                logger.debug(f"Skipping transcript (speaking={is_agent_speaking}, text='{transcript}')")
                 return
             
-            logger.info(f"📝 USER SAID: '{transcript}'")
+            logger.info(f"USER SAID: '{transcript}'")
             
             # Save to DB
             try:
@@ -127,13 +161,11 @@ async def handle_media_stream(
                     created_at=datetime.utcnow()
                 ))
                 db.commit()
-                logger.info(f"💾 Saved user message to DB")
             except Exception as e:
-                logger.error(f"DB save error: {e}")
+                logger.error(f"DB error: {e}")
             
             # Get RAG response
             is_agent_speaking = True
-            logger.info(f"🤖 Getting RAG response...")
             
             try:
                 response_chunks = []
@@ -146,7 +178,7 @@ async def handle_media_stream(
                     response_chunks.append(chunk)
                 
                 llm_response = "".join(response_chunks)
-                logger.info(f"✅ AGENT RESPONSE: '{llm_response[:100]}...'")
+                logger.info(f"AGENT: '{llm_response[:100]}...'")
                 
                 # Save to DB
                 db.add(ConversationTurn(
@@ -161,20 +193,18 @@ async def handle_media_stream(
                 await stream_elevenlabs_audio(websocket, stream_sid, llm_response)
                 
             except Exception as e:
-                logger.error(f"❌ RAG error: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+                logger.error(f"RAG error: {e}")
                 await stream_elevenlabs_audio(
-                    websocket, 
-                    stream_sid, 
-                    "I'm having trouble processing that. Could you please repeat?"
+                    websocket,
+                    stream_sid,
+                    "I'm having trouble right now. Could you please repeat?"
                 )
             finally:
                 is_agent_speaking = False
         
         # Initialize Deepgram
         session_id = f"deepgram_{call_sid}"
-        logger.info(f"🎙️ Initializing Deepgram session: {session_id}")
+        logger.info(f"Initializing Deepgram...")
         
         deepgram_connected = await deepgram_service.initialize_session(
             session_id=session_id,
@@ -182,148 +212,115 @@ async def handle_media_stream(
         )
         
         if not deepgram_connected:
-            logger.error(f"❌ Deepgram connection failed for {call_sid}")
+            logger.error(f"Deepgram connection failed")
             await websocket.close()
             return
         
-        logger.info(f"✅ Deepgram connected for {call_sid}")
+        logger.info(f"Deepgram connected")
         
-        # Main WebSocket message loop
-        logger.info(f"📨 Starting message loop for {call_sid}")
+        # Process buffered start event if we have it
+        if first_message_data and first_message_data.get("event") == "start":
+            logger.info("Processing buffered start event...")
+            stream_sid = first_message_data.get("streamSid")
+            logger.info(f"STREAM STARTED: {stream_sid}")
+            
+            # Send greeting
+            await asyncio.sleep(0.8)
+            greeting = "Thank you for calling Callsure. How may I help you?"
+            logger.info(f"Sending greeting...")
+            await stream_elevenlabs_audio(websocket, stream_sid, greeting)
+            greeting_sent = True
+            logger.info(f"Greeting sent")
+        
+        # Main message loop
+        logger.info("Entering message loop...")
         
         while True:
             try:
-                # Wait for message with timeout
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
-                
-                try:
-                    data = json.loads(message)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON: {message[:100]}")
-                    continue
-                
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
+                data = json.loads(message)
                 event = data.get("event")
                 
                 if event == "connected":
-                    logger.info(f"🔗 Twilio connected event")
+                    logger.debug("Connected event")
                     
                 elif event == "start":
-                    stream_sid = data.get("streamSid")
-                    call_started = True
-                    logger.info(f"▶️ STREAM STARTED - StreamSid: {stream_sid}")
-                    logger.info(f"   Start data: {json.dumps(data, indent=2)}")
-                    
-                    # Send greeting after a short delay
                     if not greeting_sent:
-                        logger.info(f"🎤 Preparing to send greeting...")
-                        await asyncio.sleep(1.0)  # Wait for stream to be fully ready
+                        stream_sid = data.get("streamSid")
+                        logger.info(f"STREAM STARTED: {stream_sid}")
                         
+                        await asyncio.sleep(0.8)
                         greeting = "Thank you for calling Callsure. How may I help you?"
-                        logger.info(f"🎤 Sending greeting: '{greeting}'")
-                        
+                        logger.info(f"Sending greeting...")
                         await stream_elevenlabs_audio(websocket, stream_sid, greeting)
                         greeting_sent = True
-                        logger.info(f"✅ Greeting sent")
+                        logger.info(f"Greeting sent")
                     
                 elif event == "media":
-                    # Audio from customer
-                    if not is_agent_speaking and call_started:
+                    if not is_agent_speaking:
                         payload = data.get("media", {}).get("payload")
                         if payload:
-                            # Convert and send to Deepgram
-                            converted_audio = await deepgram_service.convert_twilio_audio(
-                                payload, 
-                                session_id
-                            )
-                            if converted_audio:
-                                await deepgram_service.process_audio_chunk(
-                                    session_id,
-                                    converted_audio
-                                )
-                    
-                elif event == "stop":
-                    logger.info(f"⏹️ STREAM STOPPED - StreamSid: {stream_sid}")
-                    break
+                            audio = await deepgram_service.convert_twilio_audio(payload, session_id)
+                            if audio:
+                                await deepgram_service.process_audio_chunk(session_id, audio)
                     
                 elif event == "mark":
                     mark_name = data.get("mark", {}).get("name")
-                    logger.info(f"📍 Mark event: {mark_name}")
+                    logger.debug(f"Mark: {mark_name}")
                     
-                else:
-                    logger.debug(f"❓ Unknown event: {event}")
+                elif event == "stop":
+                    logger.info(f"STREAM STOPPED")
+                    break
                     
             except asyncio.TimeoutError:
-                # No message, continue
                 continue
-                
             except WebSocketDisconnect:
-                logger.info(f"🔌 WebSocket disconnected normally - {call_sid}")
+                logger.info(f"WebSocket disconnected")
                 break
-                
             except Exception as e:
-                logger.error(f"❌ Error in message loop: {str(e)}")
-                import traceback
-                logger.error(traceback.format_exc())
+                logger.error(f"Error: {str(e)}")
                 break
         
     except Exception as e:
-        logger.error(f"❌ Fatal error in media stream: {str(e)}")
+        logger.error(f"Fatal error: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
         
     finally:
         # Cleanup
-        logger.info(f"🧹 Cleaning up session {call_sid}")
+        logger.info(f"Cleaning up {call_sid}")
         try:
             await deepgram_service.close_session(session_id)
         except:
             pass
+        call_context.pop(call_sid, None)
         db.close()
-        logger.info(f"✅ Cleanup complete for {call_sid}")
+        logger.info(f"Cleanup complete")
 
 async def stream_elevenlabs_audio(websocket: WebSocket, stream_sid: str, text: str):
     """Stream ElevenLabs audio to Twilio"""
-    
     if not stream_sid:
-        logger.error("❌ No stream_sid, cannot send audio")
+        logger.error("No stream_sid")
         return
     
     try:
-        logger.info(f"🎤 Generating audio for: '{text[:50]}...'")
+        logger.info(f"Generating audio: '{text[:50]}...'")
         
         chunk_count = 0
-        
         async for audio_chunk in elevenlabs_service.generate(text):
             if audio_chunk and stream_sid:
-                # Send to Twilio
                 message = {
                     "event": "media",
                     "streamSid": stream_sid,
-                    "media": {
-                        "payload": audio_chunk
-                    }
+                    "media": {"payload": audio_chunk}
                 }
-                
                 await websocket.send_json(message)
                 chunk_count += 1
         
-        # Send mark to know when audio finishes
-        mark_message = {
-            "event": "mark",
-            "streamSid": stream_sid,
-            "mark": {
-                "name": f"audio_complete_{chunk_count}"
-            }
-        }
-        await websocket.send_json(mark_message)
-        
-        logger.info(f"✅ Sent {chunk_count} audio chunks")
+        logger.info(f"Sent {chunk_count} audio chunks")
         
     except Exception as e:
-        logger.error(f"❌ Error streaming audio: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-
+        logger.error(f"Error streaming audio: {str(e)}")
 
 @router.post("/outbound-connect")
 async def handle_outbound_connect(
