@@ -9,6 +9,7 @@ from services.rag.rag_service import get_rag_service
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from datetime import datetime
 from config.settings import settings
+from database.config import get_db
 import logging
 import json
 import asyncio
