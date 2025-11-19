@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     twilio_enable_recording: bool = Field(default=False, env="TWILIO_ENABLE_RECORDING")
     twilio_recording_status_callback: Optional[str] = Field(default=None, env="TWILIO_RECORDING_STATUS_CALLBACK")
     webhook_base_url: Optional[str] = Field(default="http://localhost:8001", env="WEBHOOK_BASE_URL")
-    base_url: Optional[str] = Field(default="http://localhost:8001", env="BASE_URL")
+    base_url: Optional[str] = Field(default="https://processor.callsure.ai", env="BASE_URL")
     
     # Call Management
     call_cleanup_interval: int = Field(default=3600, env="CALL_CLEANUP_INTERVAL")  # 1 hour

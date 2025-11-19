@@ -537,3 +537,22 @@ class CampaignCall(Base):
     
     # Relationships
     campaign = relationship("Campaign", back_populates="calls")
+
+class OutboundCall(Base):
+    """Track outbound call attempts"""
+    __tablename__ = "outbound_calls"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    campaign_id = Column(String, nullable=False, index=True)
+    call_sid = Column(String, unique=True, nullable=False)
+    to_number = Column(String, nullable=False)
+    from_number = Column(String, nullable=False)
+    status = Column(String, default="initiated")
+    attempt_number = Column(Integer, default=1)
+    lead_data = Column(JSON)
+    duration = Column(Integer)
+    recording_url = Column(String)
+    notes = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ended_at = Column(DateTime)

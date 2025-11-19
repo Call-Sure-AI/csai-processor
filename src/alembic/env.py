@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import sys
 import os
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -6,6 +7,15 @@ from sqlalchemy import pool
 from alembic import context
 from database.config import Base
 from database import models as app_models
+
+current_path = os.path.dirname(os.path.abspath(__file__))
+src_path = os.path.abspath(os.path.join(current_path, ".."))
+sys.path.insert(0, src_path)
+
+from dotenv import load_dotenv
+root_path = os.path.abspath(os.path.join(src_path, ".."))
+env_path = os.path.join(root_path, ".env")
+load_dotenv(env_path)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
