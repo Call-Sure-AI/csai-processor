@@ -58,7 +58,7 @@ class DeepgramWebSocketService:
                         return
                     
                     if result.is_final:
-                        logger.info(f"Deepgram transcript (final): '{sentence}'")
+                        logger.info(f"📝 Deepgram transcript (final): '{sentence}'")
                         await callback(session_id, sentence)
                     else:
                         logger.debug(f"Interim: '{sentence}'")
