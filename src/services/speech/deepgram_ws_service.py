@@ -26,17 +26,19 @@ class DeepgramWebSocketService:
                 await self.close_session(session_id)
 
             if not self.deepgram_api_key:
-                logger.error(f"No Deepgram API key found for session {session_id}")
+                logger.error(f"No Deepgram API key found")
                 return False
 
             logger.info(f"Initializing Deepgram session {session_id}")
             
-            # Initialize Deepgram client
-            config = DeepgramClientOptions(options={"keepalive": "true"})
+            # Initialize Deepgram client with SDK 3.7.2
+            config = DeepgramClientOptions(
+                options={"keepalive": "true"}
+            )
             deepgram = DeepgramClient(self.deepgram_api_key, config)
             
-            # Create connection
-            dg_connection = deepgram.listen.asyncwebsocket.v("1")
+            # Create live transcription connection
+            dg_connection = deepgram.listen.asynclive.v("1")
             
             session = {
                 "connection": dg_connection,
@@ -45,9 +47,9 @@ class DeepgramWebSocketService:
             }
             self.sessions[session_id] = session
             
-            # Set up event handlers
+            # Event handlers
             async def on_open(self_inner, open_event, **kwargs):
-                logger.info(f"Deepgram connected for {session_id}")
+                logger.info(f"Deepgram connected: {session_id}")
                 session["connected"] = True
             
             async def on_message(self_inner, result, **kwargs):
@@ -58,7 +60,7 @@ class DeepgramWebSocketService:
                         return
                     
                     if result.is_final:
-                        logger.info(f"📝 Deepgram transcript (final): '{sentence}'")
+                        logger.info(f"Deepgram final: '{sentence}'")
                         await callback(session_id, sentence)
                     else:
                         logger.debug(f"Interim: '{sentence}'")
@@ -67,7 +69,7 @@ class DeepgramWebSocketService:
                     logger.error(f"Error in on_message: {str(e)}")
             
             async def on_metadata(self_inner, metadata, **kwargs):
-                logger.debug(f"Deepgram metadata: {metadata}")
+                logger.debug(f"Metadata received")
             
             async def on_speech_started(self_inner, speech_started, **kwargs):
                 logger.debug(f"Speech started")
@@ -76,16 +78,16 @@ class DeepgramWebSocketService:
                 logger.debug(f"Utterance ended")
             
             async def on_close(self_inner, close_event, **kwargs):
-                logger.info(f"Deepgram connection closed for {session_id}")
+                logger.info(f"Deepgram closed: {session_id}")
                 session["connected"] = False
             
             async def on_error(self_inner, error, **kwargs):
-                logger.error(f"Deepgram error for {session_id}: {error}")
+                logger.error(f"Deepgram error: {error}")
             
             async def on_unhandled(self_inner, unhandled, **kwargs):
-                logger.debug(f"Deepgram unhandled event: {unhandled}")
+                logger.debug(f"Unhandled event: {unhandled}")
             
-            # Register event handlers
+            # Register all event handlers
             dg_connection.on(LiveTranscriptionEvents.Open, on_open)
             dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
             dg_connection.on(LiveTranscriptionEvents.Metadata, on_metadata)
@@ -95,7 +97,7 @@ class DeepgramWebSocketService:
             dg_connection.on(LiveTranscriptionEvents.Error, on_error)
             dg_connection.on(LiveTranscriptionEvents.Unhandled, on_unhandled)
             
-            # Configure options
+            # Configure live transcription options
             options = LiveOptions(
                 model="nova-2",
                 language="en-US",
@@ -109,33 +111,44 @@ class DeepgramWebSocketService:
             )
             
             # Start connection
-            await dg_connection.start(options)
+            if not await dg_connection.start(options):
+                logger.error(f"Failed to start Deepgram connection")
+                return False
             
-            # Wait for connection
-            for i in range(50):
+            # Wait for connection to be established
+            for i in range(50):  # 5 seconds max
                 if session["connected"]:
-                    logger.info(f"Deepgram session ready: {session_id}")
+                    logger.info(f"Deepgram ready: {session_id}")
                     return True
                 await asyncio.sleep(0.1)
             
-            logger.error(f"Timeout connecting to Deepgram for {session_id}")
+            logger.error(f"Timeout waiting for Deepgram connection")
             return False
             
         except Exception as e:
-            logger.error(f"Error initializing Deepgram session for {session_id}: {str(e)}")
+            logger.error(f"Error initializing Deepgram: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return False
     
     async def convert_twilio_audio(self, payload: str, session_id: str) -> bytes:
-        """Convert Twilio's mulaw audio to PCM for Deepgram"""
+        """
+        Convert Twilio's mulaw audio (8kHz) to linear16 PCM (16kHz) for Deepgram
+        """
         try:
+            # Decode base64 mulaw audio from Twilio
             mulaw_audio = base64.b64decode(payload)
+            
+            # Convert mulaw to linear PCM (16-bit)
             pcm_audio = audioop.ulaw2lin(mulaw_audio, 2)
+            
+            # Resample from 8kHz to 16kHz
             pcm_audio_16k = audioop.ratecv(pcm_audio, 2, 1, 8000, 16000, None)[0]
+            
             return pcm_audio_16k
+            
         except Exception as e:
-            logger.error(f"Error converting audio for {session_id}: {str(e)}")
+            logger.error(f"Error converting audio: {str(e)}")
             return b''
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes) -> bool:
@@ -145,11 +158,11 @@ class DeepgramWebSocketService:
                 return False
             
             connection = session["connection"]
-            await connection.send(audio_data)
+            connection.send(audio_data)
             return True
             
         except Exception as e:
-            logger.error(f"Error processing audio chunk: {str(e)}")
+            logger.error(f"Error sending audio: {str(e)}")
             return False
     
     async def close_session(self, session_id: str):
@@ -157,7 +170,7 @@ class DeepgramWebSocketService:
         if session and session.get("connection"):
             try:
                 await session["connection"].finish()
-                logger.info(f"Deepgram session {session_id} closed")
-            except:
-                pass
+                logger.info(f"✅ Deepgram session closed: {session_id}")
+            except Exception as e:
+                logger.error(f"Error closing session: {str(e)}")
         return True

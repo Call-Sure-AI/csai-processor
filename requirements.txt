@@ -66,7 +66,9 @@ isort>=5.12.0
 flake8>=6.1.0
 
 # WebSocket and Real-time Communication
-websockets>=12.0
+websockets>=12.0,<13.0
+deepgram-sdk==3.7.2
+
 cryptography>=41.0.0
 pyee>=9.0.0
 aiodns>=3.1.0
@@ -114,7 +116,6 @@ anthropic>=0.7.0
 # sounddevice>=0.4.6
 
 # Speech Processing
-deepgram-sdk==3.5.0
 elevenlabs==2.19.0
 
 # Twilio
