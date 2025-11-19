@@ -158,7 +158,7 @@ class DeepgramWebSocketService:
                 return False
             
             connection = session["connection"]
-            connection.send(audio_data)
+            await connection.send(audio_data)
             return True
             
         except Exception as e:
