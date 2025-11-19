@@ -73,13 +73,19 @@ async def handle_incoming_call_elevenlabs(
 @router.websocket("/media-stream")
 async def handle_media_stream(
     websocket: WebSocket,
-    call_sid: str,
-    company_id: str,
-    agent_id: str
+    call_sid: str = Query(None),
+    company_id: str = Query(None),
+    agent_id: str = Query(None)
 ):
     """Handle bidirectional audio streaming"""
     
-    logger.info(f"🔌 WebSocket connection attempt - CallSid: {call_sid}")
+    logger.info(f"🔌 WebSocket connection attempt - CallSid: {call_sid}, Company: {company_id}, Agent: {agent_id}")
+    
+    # ✅ Validate parameters
+    if not call_sid or not company_id or not agent_id:
+        logger.error(f"❌ Missing parameters: call_sid={call_sid}, company_id={company_id}, agent_id={agent_id}")
+        await websocket.close(code=1008, reason="Missing required parameters")
+        return
     
     try:
         # Accept the connection
@@ -89,8 +95,7 @@ async def handle_media_stream(
     except Exception as e:
         logger.error(f"❌ Failed to accept WebSocket: {str(e)}")
         return
-    
-    # Initialize services
+        
     from database.config import SessionLocal
     db = SessionLocal()
     
