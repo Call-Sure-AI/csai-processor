@@ -1,3 +1,4 @@
+# src\managers\conversation_manager.py
 """
 Conversation Manager Implementation
 """

@@ -31,6 +31,7 @@ from routes.campaign_routes import router as campaign_router
 from routes.document_routes import router as document_router
 from routes.outbound_routes import router as outbound_router
 from routes.twilio_elevenlabs_routes import router as twilio_elevenlabs_router
+from routes.elevenlabs_twilio_websocket_routes_optimized import router as optimized_router
 
 # Configure logging
 logging.basicConfig(
@@ -163,7 +164,8 @@ def create_app() -> FastAPI:
     
     # Campaign router
     app.include_router(campaign_router, prefix="/campaign", tags=["Campaign Management"])
-    
+    app.include_router(optimized_router)
+
     # WebSocket endpoint
     @app.websocket("/ws/{client_id}")
     async def websocket_endpoint(websocket: WebSocket, client_id: str):
@@ -405,7 +407,15 @@ async def handle_websocket_connection(websocket: WebSocket, client_id: str):
             except Exception as e:
                 logger.error(f"Error disconnecting client {client_id}: {str(e)}")
 
+
 app = create_app()
+
+# Initialize on startup
+@app.on_event("startup")
+async def startup():
+    from services.vector_store.qdrant_service_optimized import optimized_qdrant_service
+    await optimized_qdrant_service.initialize_collection()
+
 
 if __name__ == "__main__":
     import uvicorn

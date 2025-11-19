@@ -1,4 +1,4 @@
-# services/speech/deepgram_ws_service.py
+# services/speech/deepgram_ws_service_v1.py
 
 import logging
 import asyncio
