@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from database.config import get_db
@@ -95,7 +95,7 @@ async def handle_media_stream(
     except Exception as e:
         logger.error(f"❌ Failed to accept WebSocket: {str(e)}")
         return
-        
+
     from database.config import SessionLocal
     db = SessionLocal()
     
