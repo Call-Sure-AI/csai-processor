@@ -13,6 +13,8 @@ from database.config import get_db
 import logging
 import json
 import asyncio
+from services.intent_router_service import intent_router_service
+from services.agent_config_service import agent_config_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"])
@@ -130,10 +132,20 @@ async def handle_media_stream(websocket: WebSocket):
     # Get context from stored data
     context = call_context.get(call_sid, {})
     company_id = context.get("company_id")
-    agent_id = context.get("agent_id")
+    master_agent_id = context.get("agent_id")
     
-    logger.info(f"Context - Company: {company_id}, Agent: {agent_id}")
+    logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
+    master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
+    available_agents = await agent_config_service.get_company_agents(company_id)
     
+    specialized_agents = [
+        a for a in available_agents 
+        if a['agent_id'] != master_agent_id
+    ]
+
+    logger.info(f"Master: {master_agent['name']}")
+    logger.info(f"Specialized agents: {[a['name'] for a in specialized_agents]}")
+
     # Initialize services
     db = SessionLocal()
     deepgram_service = DeepgramWebSocketService()
@@ -142,6 +154,7 @@ async def handle_media_stream(websocket: WebSocket):
     stream_sid = None
     is_agent_speaking = False
     greeting_sent = False
+    first_interaction = True
     
     try:
         # Deepgram transcript callback
@@ -164,7 +177,40 @@ async def handle_media_stream(websocket: WebSocket):
                 db.commit()
             except Exception as e:
                 logger.error(f"DB error: {e}")
+
+            current_agent_id = master_agent_id
             
+            # If this is one of the first messages, try to detect intent and route
+            if first_interaction and specialized_agents:
+                detected_agent = await intent_router_service.detect_intent(
+                    transcript,
+                    company_id,
+                    master_agent,
+                    specialized_agents
+                )
+                
+                if detected_agent:
+                    # Route to specialized agent
+                    intent_router_service.set_current_agent(call_sid, detected_agent)
+                    current_agent_id = detected_agent
+                    
+                    agent_info = await agent_config_service.get_agent_by_id(company_id, detected_agent)
+                    logger.info(f"ROUTED to {agent_info['name']}")
+                    
+                    # Optionally notify user of routing
+                    routing_message = f"Let me connect you with our {agent_info['name']} who can help you better."
+                    is_agent_speaking = True
+                    await stream_elevenlabs_audio(websocket, stream_sid, routing_message)
+                    await asyncio.sleep(0.5)
+                    is_agent_speaking = False
+                else:
+                    logger.info(f"Staying with MASTER agent")
+                
+                first_interaction = False
+            else:
+                # Use previously routed agent
+                current_agent_id = intent_router_service.get_current_agent(call_sid, master_agent_id)
+
             # Get RAG response
             is_agent_speaking = True
             
@@ -173,13 +219,13 @@ async def handle_media_stream(websocket: WebSocket):
                 async for chunk in rag.get_answer(
                     company_id=company_id,
                     question=transcript,
-                    agent_id=agent_id,
+                    agent_id=current_agent_id,
                     call_sid=call_sid
                 ):
                     response_chunks.append(chunk)
                 
                 llm_response = "".join(response_chunks)
-                logger.info(f"AGENT: '{llm_response[:100]}...'")
+                logger.info(f"AGENT ({current_agent_id}): '{llm_response[:100]}...'")
                 
                 # Save to DB
                 db.add(ConversationTurn(
@@ -198,7 +244,7 @@ async def handle_media_stream(websocket: WebSocket):
                 await stream_elevenlabs_audio(
                     websocket,
                     stream_sid,
-                    "I'm having trouble right now. Could you please repeat?"
+                    "I'm having trouble. Could you please repeat?"
                 )
             finally:
                 is_agent_speaking = False
@@ -290,6 +336,7 @@ async def handle_media_stream(websocket: WebSocket):
     finally:
         # Cleanup
         logger.info(f"Cleaning up {call_sid}")
+        intent_router_service.clear_call(call_sid)
         try:
             await deepgram_service.close_session(session_id)
         except:
