@@ -136,6 +136,13 @@ async def handle_media_stream(websocket: WebSocket):
     
     logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
+
+    if not master_agent:
+        logger.error(f"Master agent {master_agent_id} not found!")
+        await websocket.close(code=1008, reason="Master agent not found")
+        return
+
+    logger.info(f"Master: {master_agent['name']}")
     available_agents = await agent_config_service.get_company_agents(company_id)
     
     specialized_agents = [

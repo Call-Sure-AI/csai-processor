@@ -22,14 +22,12 @@ class AgentConfigService:
         }
     
     async def _get_user_id(self) -> Optional[str]:
-        """
-        Get current user_id from /companies/me endpoint
-        """
+        """Get current user_id from /companies/me endpoint"""
         if self.user_id:
             return self.user_id
         
         try:
-            logger.info("Fetching user_id from /companies/me...")
+            logger.info("🔍 Fetching user_id from /companies/me...")
             
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -44,14 +42,13 @@ class AgentConfigService:
                     
                     if self.user_id:
                         logger.info(f"User ID: {self.user_id}")
-                        logger.info(f"Company: {data.get('name')}")
-                        logger.info(f"Email: {data.get('email')}")
                         return self.user_id
                     else:
-                        logger.error("No user_id in response")
+                        logger.error("No user_id in /companies/me response")
+                        logger.error(f"Response data: {data}")
                         return None
                 else:
-                    logger.error(f"Failed to fetch user info: {response.status_code}")
+                    logger.error(f"/companies/me returned {response.status_code}")
                     logger.error(f"Response: {response.text}")
                     return None
                     
@@ -60,6 +57,7 @@ class AgentConfigService:
             import traceback
             logger.error(traceback.format_exc())
             return None
+
     
     async def _load_companies(self) -> List[Dict]:
         """Load all companies for the user"""
