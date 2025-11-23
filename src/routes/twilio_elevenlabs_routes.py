@@ -222,7 +222,7 @@ async def handle_media_stream(websocket: WebSocket):
                 current_agent_id = intent_router_service.get_current_agent(call_sid, master_agent_id)
 
             call_state["interaction_count"] += 1
-            
+
             # Get RAG response
             is_agent_speaking = True
             
@@ -285,7 +285,7 @@ async def handle_media_stream(websocket: WebSocket):
             
             # Send greeting
             await asyncio.sleep(0.8)
-            greeting = "Thank you for calling Callsure. How may I help you?"
+            greeting = "Thank you for calling Jamunjar. How may I help you?"
             logger.info(f"Sending greeting...")
             await stream_elevenlabs_audio(websocket, stream_sid, greeting)
             greeting_sent = True
@@ -309,7 +309,7 @@ async def handle_media_stream(websocket: WebSocket):
                         logger.info(f"STREAM STARTED: {stream_sid}")
                         
                         await asyncio.sleep(0.8)
-                        greeting = "Thank you for calling Callsure. How may I help you?"
+                        greeting = "Thank you for calling Jamunjar. How may I help you?"
                         logger.info(f"Sending greeting...")
                         await stream_elevenlabs_audio(websocket, stream_sid, greeting)
                         greeting_sent = True
