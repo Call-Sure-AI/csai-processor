@@ -33,7 +33,7 @@ class RAGService:
         )
         
         self.qa_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a helpful AI assistant for Callsure.ai customer support.
+            ("system", """You are a helpful AI assistant for Jamunjar customer support.
 
 Use the following context from documents to answer questions accurately.
 
