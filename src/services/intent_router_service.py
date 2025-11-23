@@ -40,7 +40,7 @@ class IntentRouterService:
             
             # Build agent descriptions
             agent_descriptions = "\n".join([
-                f"- **{agent['name']}** (ID: {agent['agent_id'][:8]}...): {agent['description']}"
+                f"- {agent['name']} (ID: {agent['agent_id']}): {agent['description']}"
                 for agent in available_agents
             ])
             
