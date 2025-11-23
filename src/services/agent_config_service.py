@@ -9,7 +9,7 @@ class AgentConfigService:
     def __init__(self):
         self.api_base = "https://beta.callsure.ai"
         self.auth_token = settings.callsure_api_token
-        self.user_id = None
+        self.user_id = "cma0vlzd10000qp01rri6dugv"
         
         self.companies_cache = None
         self.agents_cache = None
@@ -66,16 +66,16 @@ class AgentConfigService:
         
         try:
             #user_id = await self._get_user_id()
-            user_id = "cma0vlzd10000qp01rri6dugv"
-            if not user_id:
-                logger.error("Cannot load companies without user_id")
-                return []
+            #user_id = "cma0vlzd10000qp01rri6dugv"
+            #if not user_id:
+                #logger.error("Cannot load companies without user_id")
+                #return []
             
-            logger.info(f"Loading companies for user {user_id}...")
+            #logger.info(f"Loading companies for user {user_id}...")
             
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.api_base}/companies/user/{user_id}",
+                    f"{self.api_base}/companies/user/{self.user_id}",
                     headers=self._get_headers(),
                     timeout=10.0
                 )
