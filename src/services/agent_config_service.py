@@ -65,7 +65,8 @@ class AgentConfigService:
             return self.companies_cache
         
         try:
-            user_id = await self._get_user_id()
+            #user_id = await self._get_user_id()
+            user_id = "cma0vlzd10000qp01rri6dugv"
             if not user_id:
                 logger.error("Cannot load companies without user_id")
                 return []
