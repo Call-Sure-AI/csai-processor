@@ -67,13 +67,12 @@ class AgentConfigService:
             return self.companies_cache
         
         try:
-            # Get user_id first
             user_id = await self._get_user_id()
             if not user_id:
                 logger.error("Cannot load companies without user_id")
                 return []
             
-            logger.info(f"📦 Loading companies for user {user_id}...")
+            logger.info(f"Loading companies for user {user_id}...")
             
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -85,11 +84,10 @@ class AgentConfigService:
                 if response.status_code == 200:
                     companies = response.json()
                     self.companies_cache = companies
-                    logger.info(f"✅ Loaded {len(companies)} companies")
-                    
-                    # Log company names
-                    for company in companies[:3]:  # Show first 3
-                        logger.info(f"   - {company.get('name')} ({company.get('id')[:8]}...)")
+                    logger.info(f"Loaded {len(companies)} companies")
+
+                    for company in companies[:3]:
+                        logger.info(f"- {company.get('name')} ({company.get('id')[:8]}...)")
                     
                     return companies
                 else:
@@ -100,32 +98,6 @@ class AgentConfigService:
             logger.error(f"Error fetching companies: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
-            return []
-
-    async def _load_companies(self) -> List[Dict]:
-        """Load all companies for the user"""
-        if self.companies_cache:
-            return self.companies_cache
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.api_base}/companies/user/{self.user_id}",
-                    headers=self._get_headers(),
-                    timeout=10.0
-                )
-                
-                if response.status_code == 200:
-                    companies = response.json()
-                    self.companies_cache = companies
-                    logger.info(f"Loaded {len(companies)} companies")
-                    return companies
-                else:
-                    logger.error(f"Failed to fetch companies: {response.status_code}")
-                    return []
-                    
-        except Exception as e:
-            logger.error(f"Error fetching companies: {str(e)}")
             return []
     
     async def _load_agents(self) -> List[Dict]:
