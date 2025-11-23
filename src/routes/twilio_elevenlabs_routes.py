@@ -161,7 +161,10 @@ async def handle_media_stream(websocket: WebSocket):
     stream_sid = None
     is_agent_speaking = False
     greeting_sent = False
-    first_interaction = True
+    call_state = {
+        "first_interaction": True,
+        "interaction_count": 0
+    }
     
     try:
         # Deepgram transcript callback
@@ -188,7 +191,7 @@ async def handle_media_stream(websocket: WebSocket):
             current_agent_id = master_agent_id
             
             # If this is one of the first messages, try to detect intent and route
-            if first_interaction and specialized_agents:
+            if call_state["first_interaction"] and specialized_agents:
                 detected_agent = await intent_router_service.detect_intent(
                     transcript,
                     company_id,
@@ -213,11 +216,13 @@ async def handle_media_stream(websocket: WebSocket):
                 else:
                     logger.info(f"Staying with MASTER agent")
                 
-                first_interaction = False
+                call_state["first_interaction"] = False
             else:
                 # Use previously routed agent
                 current_agent_id = intent_router_service.get_current_agent(call_sid, master_agent_id)
 
+            call_state["interaction_count"] += 1
+            
             # Get RAG response
             is_agent_speaking = True
             
