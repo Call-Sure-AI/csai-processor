@@ -204,7 +204,7 @@ async def handle_media_stream(websocket: WebSocket):
                     intent_router_service.set_current_agent(call_sid, detected_agent)
                     current_agent_id = detected_agent
                     
-                    agent_info = await agent_config_service.get_agent_by_id(company_id, detected_agent)
+                    agent_info = await agent_config_service.get_agent_by_id(detected_agent)
                     logger.info(f"ROUTED to {agent_info['name']}")
                     
                     # Optionally notify user of routing
