@@ -25,6 +25,9 @@ router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"
 # Active call context
 call_context = {}
 
+from_number_global = None
+to_number_global = None
+
 @router.post("/incoming-call")
 async def handle_incoming_call_elevenlabs(request: Request):
     """Incoming call handler with ElevenLabs via WebSocket"""
@@ -34,6 +37,9 @@ async def handle_incoming_call_elevenlabs(request: Request):
         from_number = form_data.get("From")
         to_number = form_data.get("To")
         
+        from_number_global = from_number
+        to_number_global = to_number
+
         company_id = request.query_params.get("company_id")
         agent_id = request.query_params.get("agent_id")
         
@@ -135,8 +141,8 @@ async def handle_media_stream(websocket: WebSocket):
 
     call_metadata = {
         'start_time': datetime.utcnow(),
-        'from_number': None,
-        'to_number': None
+        'from_number': from_number_global,
+        'to_number': to_number_global
     }
 
     # Get context from stored data
@@ -374,36 +380,13 @@ async def handle_media_stream(websocket: WebSocket):
             logger.info(f"Uploading call data to S3...")
             logger.info(f"Duration: {call_duration}s")
             logger.info(f"Transcript turns: {len(conversation_transcript)}")
-            
-            recording_url = None
-            if call_duration > 5:
-                logger.info(f"Waiting for Twilio recording to process...")
-                
-                max_retries = 25
-                retry_delay = 5
-                
-                for attempt in range(max_retries):
-                    await asyncio.sleep(retry_delay)
-                    
-                    recording_url = await call_recording_service.get_recording_url_from_twilio(call_sid)
-                    
-                    if recording_url:
-                        logger.info(f"Recording found on attempt {attempt + 1}")
-                        break
-                    else:
-                        logger.info(f"Recording not ready yet (attempt {attempt + 1}/{max_retries})")
-                
-                if not recording_url:
-                    logger.warning(f"Recording not available after {max_retries} attempts")
-            else:
-                logger.info(f"Call too short ({call_duration}s), skipping recording")
 
             s3_urls = await call_recording_service.save_call_data(
                 call_sid=call_sid,
                 company_id=company_id,
                 agent_id=master_agent_id,
                 transcript=conversation_transcript,
-                recording_url=recording_url,
+                recording_url=None,
                 duration=call_duration,
                 from_number=call_metadata.get('from_number'),
                 to_number=call_metadata.get('to_number')
@@ -411,13 +394,17 @@ async def handle_media_stream(websocket: WebSocket):
             
             logger.info(f"S3 Upload Complete:")
             logger.info(f"Transcript: {s3_urls.get('transcript_url')}")
-            logger.info(f"Recording: {s3_urls.get('recording_url')}")
+
+            recording_url = None
+            if call_duration > 5:
+                asyncio.create_task(
+                    upload_recording_later(call_sid, company_id, db)
+                )
 
             try:
                 call_record = db.query(Call).filter_by(call_sid=call_sid).first()
                 if call_record:
                     call_record.transcription = s3_urls.get('transcript_url')
-                    call_record.recording_url = s3_urls.get('recording_url')
                     call_record.duration = call_duration
                     call_record.status = 'completed'
                     call_record.ended_at = datetime.utcnow()
@@ -431,7 +418,6 @@ async def handle_media_stream(websocket: WebSocket):
                         to_number=call_metadata.get('to_number'),
                         status='completed',
                         duration=call_duration,
-                        recording_url=s3_urls.get('recording_url'),
                         transcription=s3_urls.get('transcript_url'),
                         created_at=call_metadata['start_time'],
                         ended_at=datetime.utcnow()
@@ -496,7 +482,7 @@ async def handle_outbound_connect(
         company_id = request.query_params.get("company_id")
         customer_name = request.query_params.get("customer_name", "")
         
-        logger.info(f"📞 Outbound ElevenLabs call: {call_sid}")
+        logger.info(f"Outbound ElevenLabs call: {call_sid}")
         
         response = VoiceResponse()
         
@@ -582,3 +568,44 @@ async def handle_outbound_stream(
         logger.error(f"Outbound stream error: {str(e)}")
     finally:
         await deepgram_service.close_session(session_id)
+
+async def upload_recording_later(call_sid: str, company_id: str, db: Session):
+    """Background task to upload recording after Twilio processes it"""
+    try:
+        logger.info(f"Background task: Fetching recording for {call_sid}")
+        
+        await asyncio.sleep(1800)
+        
+        recording_url = await call_recording_service.get_recording_url_from_twilio(call_sid)
+        
+        if recording_url:
+            from io import BytesIO
+            import httpx
+            
+            logger.info(f"Downloading recording: {recording_url}")
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    recording_url,
+                    auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+                    timeout=60.0
+                )
+                
+                if response.status_code == 200:
+                    # Upload to S3
+                    recording_s3_url = await call_recording_service._upload_recording(
+                        call_sid=call_sid,
+                        company_id=company_id,
+                        recording_url=recording_url
+                    )
+                    
+                    # Update database
+                    call_record = db.query(Call).filter_by(call_sid=call_sid).first()
+                    if call_record:
+                        call_record.recording_url = recording_s3_url
+                        db.commit()
+                        logger.info(f"Background: Recording uploaded for {call_sid}")
+        else:
+            logger.warning(f"Background: No recording found for {call_sid}")
+    
+    except Exception as e:
+        logger.error(f"Background recording upload failed: {str(e)}")
