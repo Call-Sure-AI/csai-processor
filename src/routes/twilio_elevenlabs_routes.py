@@ -176,7 +176,8 @@ async def handle_media_stream(websocket: WebSocket):
     }
     
     try:
-        async def on_deepgram_transcript(session_id: str, transcript: str, conversation_transcript):
+        async def on_deepgram_transcript(session_id: str, transcript: str):
+            nonlocal conversation_transcript
             nonlocal is_agent_speaking
             if is_agent_speaking or not transcript.strip():
                 return
@@ -283,8 +284,7 @@ async def handle_media_stream(websocket: WebSocket):
         
         deepgram_connected = await deepgram_service.initialize_session(
             session_id=session_id,
-            callback=on_deepgram_transcript,
-            conversation_transcript
+            callback=on_deepgram_transcript
         )
         
         if not deepgram_connected:
