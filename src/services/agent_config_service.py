@@ -207,7 +207,7 @@ class AgentConfigService:
                 agent.get("name", "General agent")
             )
             
-            return {
+            """return {
                 "agent_id": agent["id"],
                 "name": agent["name"],
                 "description": description,
@@ -215,7 +215,8 @@ class AgentConfigService:
                 "prompt": agent.get("prompt", ""),
                 "tone": additional_context.get("tone", "professional"),
                 "language": additional_context.get("language", "english"),
-            }
+            }"""
+            return agent
         
         return None
     

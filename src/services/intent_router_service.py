@@ -45,35 +45,30 @@ class IntentRouterService:
             ])
             
             # Intent detection prompt
-            system_prompt = f"""You are an intelligent call routing AI for a customer service system.
+            system_prompt = f"""You are an intelligent call routing AI.
 
-**Master Agent**: {master_agent['name']}
-- Role: {master_agent['description']}
-- Use for: General inquiries, greetings, unclear requests
-
-**Specialized Agents**:
+**Available Specialists**:
 {agent_descriptions}
 
 **Your Task**:
-Analyze what the customer is asking for and determine which agent can best help them.
+Analyze the customer's request and determine which specialist can best help them.
 
 **Rules**:
-1. If the request clearly matches a specialized agent's expertise, return ONLY that agent's full UUID
-2. If it's a general greeting or unclear request, return "MASTER"
-3. If customer mentions multiple topics, route to the MOST relevant agent
-4. ONLY return the agent_id or "MASTER" - nothing else
+1. If the request matches a specialist's expertise, return their full agent ID
+2. If it's a general greeting or unclear, return "MASTER"
+3. Only return the agent ID or "MASTER" - nothing else
 
 **Examples**:
-Customer: "I want to buy your product" → [sales_agent_uuid]
-Customer: "I need technical support" → [support_agent_uuid]
-Customer: "Hello, how are you?" → MASTER
-Customer: "What services do you offer?" → MASTER"""
+"I need to book an appointment" → booking_agent_id
+"Tell me about your services" → MASTER
+"I want financial advice" → financial_agent_id"""
+
 
             response = await self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Customer said: '{user_message}'\n\nWhich agent should handle this?"}
+                    {"role": "user", "content": f"Customer: '{user_message}'\n\nWhich specialist?"}
                 ],
                 temperature=0.1,
                 max_tokens=100

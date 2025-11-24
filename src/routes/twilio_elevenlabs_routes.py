@@ -285,8 +285,8 @@ async def handle_media_stream(websocket: WebSocket):
             
             # Send greeting
             await asyncio.sleep(0.8)
-            greeting = "Thank you for calling Jamunjar. How may I help you?"
-            logger.info(f"Sending greeting...")
+            greeting = prompt_template_service.generate_greeting(master_agent)
+            logger.info(f"Sending greeting: '{greeting}'")
             await stream_elevenlabs_audio(websocket, stream_sid, greeting)
             greeting_sent = True
             logger.info(f"Greeting sent")
@@ -309,8 +309,8 @@ async def handle_media_stream(websocket: WebSocket):
                         logger.info(f"STREAM STARTED: {stream_sid}")
                         
                         await asyncio.sleep(0.8)
-                        greeting = "Thank you for calling Jamunjar. How may I help you?"
-                        logger.info(f"Sending greeting...")
+                        greeting = prompt_template_service.generate_greeting(master_agent)
+                        logger.info(f"Sending greeting: '{greeting}'")
                         await stream_elevenlabs_audio(websocket, stream_sid, greeting)
                         greeting_sent = True
                         logger.info(f"Greeting sent")
