@@ -25,8 +25,6 @@ router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"
 # Active call context
 call_context = {}
 
-from_number_global = None
-to_number_global = None
 
 @router.post("/incoming-call")
 async def handle_incoming_call_elevenlabs(request: Request):
@@ -37,6 +35,9 @@ async def handle_incoming_call_elevenlabs(request: Request):
         from_number = form_data.get("From")
         to_number = form_data.get("To")
         
+        global from_number_global
+        global to_number_global
+
         from_number_global = from_number
         to_number_global = to_number
 
@@ -372,6 +373,8 @@ async def handle_media_stream(websocket: WebSocket):
     finally:
         # Cleanup
         logger.info(f"Cleaning up {call_sid}")
+        logger.info(f"   From: {call_metadata.get('from_number')}")
+        logger.info(f"   To: {call_metadata.get('to_number')}")
         try:
             call_duration = 0
             if call_metadata.get('start_time'):
