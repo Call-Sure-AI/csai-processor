@@ -15,6 +15,7 @@ import json
 import asyncio
 from services.intent_router_service import intent_router_service
 from services.agent_config_service import agent_config_service
+from services.prompt_template_service import prompt_template_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"])
