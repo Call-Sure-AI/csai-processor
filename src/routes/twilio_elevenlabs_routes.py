@@ -393,11 +393,40 @@ async def handle_media_stream(websocket: WebSocket):
             logger.info(f"Transcript: {s3_urls.get('transcript_url')}")
             logger.info(f"Recording: {s3_urls.get('recording_url')}")
 
+            try:
+                call_record = db.query(Call).filter_by(call_sid=call_sid).first()
+                if call_record:
+                    call_record.transcription = s3_urls.get('transcript_url')
+                    call_record.recording_url = s3_urls.get('recording_url')
+                    call_record.duration = call_duration
+                    call_record.status = 'completed'
+                    call_record.ended_at = datetime.utcnow()
+                    db.commit()
+                    logger.info(f"Database updated with S3 URLs")
+                else:
+                    new_call = Call(
+                        call_sid=call_sid,
+                        company_id=company_id,
+                        from_number=call_metadata.get('from_number'),
+                        to_number=call_metadata.get('to_number'),
+                        status='completed',
+                        duration=call_duration,
+                        recording_url=s3_urls.get('recording_url'),
+                        transcription=s3_urls.get('transcript_url'),
+                        created_at=call_metadata['start_time'],
+                        ended_at=datetime.utcnow()
+                    )
+                    db.add(new_call)
+                    db.commit()
+                    logger.info(f"Call record created")
+            except Exception as db_error:
+                logger.error(f"Database update error: {db_error}")
+                db.rollback()
         except Exception as upload_error:
             logger.error(f"S3 upload error: {upload_error}")
             import traceback
             logger.error(traceback.format_exc())
-            
+
         intent_router_service.clear_call(call_sid)
         try:
             await deepgram_service.close_session(session_id)
