@@ -102,11 +102,11 @@ class AgentConfigService:
         """Load all agents for the user"""
         if self.agents_cache:
             return self.agents_cache
-        
+        user_id = await self._get_user_id()
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.api_base}/api/agent/user/{self.user_id}",
+                    f"{self.api_base}/api/agent/user/{user_id}",
                     headers=self._get_headers(),
                     timeout=10.0
                 )
