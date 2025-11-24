@@ -17,6 +17,7 @@ from services.intent_router_service import intent_router_service
 from services.agent_config_service import agent_config_service
 from services.prompt_template_service import prompt_template_service
 from services.call_recording_service import call_recording_service
+from database.models import ConversationTurn, Call
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"])
@@ -376,8 +377,26 @@ async def handle_media_stream(websocket: WebSocket):
             
             recording_url = None
             if call_duration > 5:
-                await asyncio.sleep(2)
-                recording_url = await call_recording_service.get_recording_url_from_twilio(call_sid)
+                logger.info(f"Waiting for Twilio recording to process...")
+                
+                max_retries = 3
+                retry_delay = 3
+                
+                for attempt in range(max_retries):
+                    await asyncio.sleep(retry_delay)
+                    
+                    recording_url = await call_recording_service.get_recording_url_from_twilio(call_sid)
+                    
+                    if recording_url:
+                        logger.info(f"Recording found on attempt {attempt + 1}")
+                        break
+                    else:
+                        logger.info(f"Recording not ready yet (attempt {attempt + 1}/{max_retries})")
+                
+                if not recording_url:
+                    logger.warning(f"Recording not available after {max_retries} attempts")
+            else:
+                logger.info(f"Call too short ({call_duration}s), skipping recording")
 
             s3_urls = await call_recording_service.save_call_data(
                 call_sid=call_sid,
