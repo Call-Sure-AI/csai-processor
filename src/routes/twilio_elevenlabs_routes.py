@@ -16,6 +16,7 @@ import asyncio
 from services.intent_router_service import intent_router_service
 from services.agent_config_service import agent_config_service
 from services.prompt_template_service import prompt_template_service
+from services.call_recording_service import call_recording_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"])
@@ -79,7 +80,7 @@ async def handle_incoming_call_elevenlabs(request: Request):
 async def handle_media_stream(websocket: WebSocket):
 
     try:
-        logger.info("🔌 WebSocket connection attempt...")
+        logger.info("WebSocket connection attempt...")
         await websocket.accept()
         logger.info("WebSocket ACCEPTED")
         
@@ -87,6 +88,7 @@ async def handle_media_stream(websocket: WebSocket):
         logger.error(f"Failed to accept WebSocket: {str(e)}")
         return
     
+    conversation_transcript = []
     call_sid = websocket.query_params.get("call_sid")
     logger.info(f"Query params: {dict(websocket.query_params)}")
     
@@ -129,7 +131,13 @@ async def handle_media_stream(websocket: WebSocket):
         return
     
     logger.info(f"Call SID validated: {call_sid}")
-    
+
+    call_metadata = {
+        'start_time': datetime.utcnow(),
+        'from_number': None,
+        'to_number': None
+    }
+
     # Get context from stored data
     context = call_context.get(call_sid, {})
     company_id = context.get("company_id")
@@ -168,12 +176,18 @@ async def handle_media_stream(websocket: WebSocket):
     }
     
     try:
-        async def on_deepgram_transcript(session_id: str, transcript: str):
+        async def on_deepgram_transcript(session_id: str, transcript: str, conversation_transcript):
             nonlocal is_agent_speaking
             if is_agent_speaking or not transcript.strip():
                 return
             
             logger.info(f"USER SAID: '{transcript}'")
+
+            conversation_transcript.append({
+                'role': 'user',
+                'content': transcript,
+                'timestamp': datetime.utcnow().isoformat()
+            })
             
             # Save to DB
             try:
@@ -234,6 +248,11 @@ async def handle_media_stream(websocket: WebSocket):
                     response_chunks.append(chunk)
                 
                 llm_response = "".join(response_chunks)
+                conversation_transcript.append({
+                    'role': 'assistant',
+                    'content': llm_response,
+                    'timestamp': datetime.utcnow().isoformat()
+                })
                 logger.info(f"AGENT ({current_agent_id}): '{llm_response[:100]}...'")
                 
                 # Save to DB
@@ -345,6 +364,40 @@ async def handle_media_stream(websocket: WebSocket):
     finally:
         # Cleanup
         logger.info(f"Cleaning up {call_sid}")
+        try:
+            call_duration = 0
+            if call_metadata.get('start_time'):
+                call_duration = int((datetime.utcnow() - call_metadata['start_time']).total_seconds())
+            
+            logger.info(f"Uploading call data to S3...")
+            logger.info(f"Duration: {call_duration}s")
+            logger.info(f"Transcript turns: {len(conversation_transcript)}")
+            
+            recording_url = None
+            if call_duration > 5:
+                await asyncio.sleep(2)
+                recording_url = await call_recording_service.get_recording_url_from_twilio(call_sid)
+
+            s3_urls = await call_recording_service.save_call_data(
+                call_sid=call_sid,
+                company_id=company_id,
+                agent_id=master_agent_id,
+                transcript=conversation_transcript,
+                recording_url=recording_url,
+                duration=call_duration,
+                from_number=call_metadata.get('from_number'),
+                to_number=call_metadata.get('to_number')
+            )
+            
+            logger.info(f"S3 Upload Complete:")
+            logger.info(f"Transcript: {s3_urls.get('transcript_url')}")
+            logger.info(f"Recording: {s3_urls.get('recording_url')}")
+
+        except Exception as upload_error:
+            logger.error(f"S3 upload error: {upload_error}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
         intent_router_service.clear_call(call_sid)
         try:
             await deepgram_service.close_session(session_id)
