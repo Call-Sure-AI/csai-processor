@@ -283,7 +283,8 @@ async def handle_media_stream(websocket: WebSocket):
         
         deepgram_connected = await deepgram_service.initialize_session(
             session_id=session_id,
-            callback=on_deepgram_transcript
+            callback=on_deepgram_transcript,
+            conversation_transcript
         )
         
         if not deepgram_connected:
