@@ -379,8 +379,8 @@ async def handle_media_stream(websocket: WebSocket):
             if call_duration > 5:
                 logger.info(f"Waiting for Twilio recording to process...")
                 
-                max_retries = 3
-                retry_delay = 3
+                max_retries = 25
+                retry_delay = 5
                 
                 for attempt in range(max_retries):
                     await asyncio.sleep(retry_delay)
