@@ -168,10 +168,8 @@ async def handle_media_stream(websocket: WebSocket):
     }
     
     try:
-        # Deepgram transcript callback
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal is_agent_speaking
-            
             if is_agent_speaking or not transcript.strip():
                 return
             
@@ -191,8 +189,9 @@ async def handle_media_stream(websocket: WebSocket):
 
             current_agent_id = master_agent_id
             
-            # If this is one of the first messages, try to detect intent and route
-            if call_state["first_interaction"] and specialized_agents:
+            if specialized_agents:
+                logger.info(f"Detecting intent for message #{call_state['interaction_count'] + 1}...")
+                
                 detected_agent = await intent_router_service.detect_intent(
                     transcript,
                     company_id,
@@ -201,30 +200,27 @@ async def handle_media_stream(websocket: WebSocket):
                 )
                 
                 if detected_agent:
-                    # Route to specialized agent
+                    previous_agent_id = intent_router_service.get_current_agent(call_sid, master_agent_id)
                     intent_router_service.set_current_agent(call_sid, detected_agent)
                     current_agent_id = detected_agent
                     
                     agent_info = await agent_config_service.get_agent_by_id(detected_agent)
-                    logger.info(f"ROUTED to {agent_info['name']}")
                     
-                    # Optionally notify user of routing
-                    routing_message = f"Let me connect you with our {agent_info['name']} who can help you better."
-                    is_agent_speaking = True
-                    await stream_elevenlabs_audio(websocket, stream_sid, routing_message)
-                    await asyncio.sleep(0.5)
-                    is_agent_speaking = False
+                    if agent_info:
+                        if detected_agent != previous_agent_id and call_state["interaction_count"] > 0:
+                            logger.info(f"RE-ROUTING to {agent_info['name']}")
+                            routing_message = f"Let me connect you with our {agent_info['name']}."
+                            is_agent_speaking = True
+                            await stream_elevenlabs_audio(websocket, stream_sid, routing_message)
+                            await asyncio.sleep(0.5)
+                            is_agent_speaking = False
+                        else:
+                            logger.info(f"ROUTED to {agent_info['name']}")
                 else:
-                    logger.info(f"Staying with MASTER agent")
-                
-                call_state["first_interaction"] = False
-            else:
-                # Use previously routed agent
-                current_agent_id = intent_router_service.get_current_agent(call_sid, master_agent_id)
-
+                    logger.info(f"Staying with MASTER")
+            
             call_state["interaction_count"] += 1
-
-            # Get RAG response
+            
             is_agent_speaking = True
             
             try:
