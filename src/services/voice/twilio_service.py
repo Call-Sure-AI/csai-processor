@@ -10,16 +10,21 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Connect, Start
 from config.settings import settings
 from sqlalchemy.orm import Session
-from database.models import Call, CallEvent
+from database.models import Call, CallEvent, CallType
 from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
 def _upsert_call(db: Session, call_sid: str, **fields):
+    """Create or update a call record"""
     call = db.query(Call).filter(Call.call_sid == call_sid).one_or_none()
     if not call:
-        call = Call(call_sid=call_sid)
+        call = Call(
+            call_sid=call_sid,
+            call_type=CallType.INCOMING
+        )
         db.add(call)
+
     for k, v in fields.items():
         setattr(call, k, v)
     return call

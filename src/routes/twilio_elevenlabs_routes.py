@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from database.config import SessionLocal
-from database.models import ConversationTurn
+from database.models import CallType, ConversationTurn
 from services.speech.deepgram_ws_service import DeepgramWebSocketService
 from services.voice.elevenlabs_service import elevenlabs_service
 from services.rag.rag_service import get_rag_service
