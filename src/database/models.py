@@ -395,6 +395,9 @@ class AgentInteraction(Base):
         viewonly=True  # Added this line
     )
     
+class CallType(str, enum.Enum):
+    INCOMING = "incoming"
+    OUTGOING = "outgoing"
 
 class Call(Base):
     __tablename__ = 'Call'
@@ -403,6 +406,7 @@ class Call(Base):
     company_id = Column(String, ForeignKey('Company.id'))
     conversation_id = Column(String, ForeignKey('Conversation.id'), nullable=True)
     call_sid = Column(String(255), unique=True)
+    call_type = Column(SQLEnum(CallType), default=CallType.INCOMING)
     from_number = Column(String(20), nullable=True)
     to_number = Column(String(20), nullable=True)
     #direction = Column(String(16), nullable=True)
