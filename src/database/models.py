@@ -407,7 +407,7 @@ class Call(Base):
     company_id = Column(String, ForeignKey('Company.id'))
     conversation_id = Column(String, ForeignKey('Conversation.id'), nullable=True)
     call_sid = Column(String(255), unique=True)
-    call_type = Column(SQLEnum(CallType), default=CallType.INCOMING)
+    call_type = Column(SQLEnum(CallType), default=CallType.incoming)
     from_number = Column(String(20), nullable=True)
     to_number = Column(String(20), nullable=True)
     #direction = Column(String(16), nullable=True)
