@@ -37,6 +37,7 @@ async def handle_incoming_call_elevenlabs(request: Request):
         
         global from_number_global
         global to_number_global
+        global company_id_global
 
         from_number_global = from_number
         to_number_global = to_number
@@ -140,12 +141,6 @@ async def handle_media_stream(websocket: WebSocket):
     
     logger.info(f"Call SID validated: {call_sid}")
 
-    call_metadata = {
-        'start_time': datetime.utcnow(),
-        'from_number': from_number_global,
-        'to_number': to_number_global
-    }
-
     # Get context from stored data
     context = call_context.get(call_sid, {})
     company_id = context.get("company_id")
@@ -153,6 +148,15 @@ async def handle_media_stream(websocket: WebSocket):
     
     logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
+
+    call_metadata = {
+        'start_time': datetime.utcnow(),
+        'from_number': from_number_global,
+        'to_number': to_number_global,
+        'company_id': company_id
+    }
+
+    logger.info(f"Detected Company Id {company_id} for storing in Call Database")
 
     if not master_agent:
         logger.error(f"Master agent {master_agent_id} not found!")
@@ -373,8 +377,9 @@ async def handle_media_stream(websocket: WebSocket):
     finally:
         # Cleanup
         logger.info(f"Cleaning up {call_sid}")
-        logger.info(f"   From: {call_metadata.get('from_number')}")
-        logger.info(f"   To: {call_metadata.get('to_number')}")
+        logger.info(f"From: {call_metadata.get('from_number')}")
+        logger.info(f"To: {call_metadata.get('to_number')}")
+        logger.info(f"Company ID: {call_metadata.get('company_id')}")
         try:
             call_duration = 0
             if call_metadata.get('start_time'):
@@ -408,6 +413,9 @@ async def handle_media_stream(websocket: WebSocket):
                 call_record = db.query(Call).filter_by(call_sid=call_sid).first()
                 if call_record:
                     call_record.transcription = s3_urls.get('transcript_url')
+                    call_record.company_id = s3_urls.get('company_id')
+                    call_record.from_number = s3_urls.get('from_number')
+                    call_record.to_number = s3_urls.get('to_number')
                     call_record.duration = call_duration
                     call_record.status = 'completed'
                     call_record.ended_at = datetime.utcnow()
@@ -416,7 +424,7 @@ async def handle_media_stream(websocket: WebSocket):
                 else:
                     new_call = Call(
                         call_sid=call_sid,
-                        company_id=company_id,
+                        company_id=call_metadata.get('company_id'),
                         from_number=call_metadata.get('from_number'),
                         to_number=call_metadata.get('to_number'),
                         status='completed',
