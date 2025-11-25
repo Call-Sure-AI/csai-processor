@@ -397,8 +397,8 @@ class AgentInteraction(Base):
     )
     
 class CallType(str, enum.Enum):
-    INCOMING = "incoming"
-    OUTGOING = "outgoing"
+    incoming = "incoming"
+    outgoing = "outgoing"
 
 class Call(Base):
     __tablename__ = 'Call'

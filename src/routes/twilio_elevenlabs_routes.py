@@ -853,7 +853,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     call_record.company_id = company_id
                     call_record.from_number = call_metadata.get('from_number')
                     call_record.to_number = call_metadata.get('to_number')
-                    call_record.call_type = CallType.OUTGOING
+                    call_record.call_type = CallType.outgoing
                     call_record.duration = call_duration
                     call_record.status = 'completed'
                     call_record.ended_at = datetime.utcnow()
@@ -865,7 +865,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                         company_id=company_id,
                         from_number=call_metadata.get('from_number'),
                         to_number=call_metadata.get('to_number'),
-                        call_type=CallType.OUTGOING,
+                        call_type=CallType.outgoing,
                         status='completed',
                         duration=call_duration,
                         transcription=s3_urls.get('transcript_url'),
