@@ -753,29 +753,29 @@ async def handle_outbound_stream(websocket: WebSocket):
                 is_agent_speaking = True
                 urgent_response = sentiment_analysis['suggested_action']
             
-            logger.info(f"URGENT RESPONSE: '{urgent_response}'")
-            
-            conversation_transcript.append({
-                'role': 'assistant',
-                'content': urgent_response,
-                'timestamp': datetime.utcnow().isoformat(),
-                'is_urgent': True
-            })
-            
-            try:
-                db.add(ConversationTurn(
-                    call_sid=call_sid,
-                    role="assistant",
-                    content=transcript,
-                    created_at=datetime.utcnow()
-                ))
-                db.commit()
-            except Exception as e:
-                logger.error(f"DB error: {e}")
-            
-            await stream_elevenlabs_audio(websocket, stream_sid, urgent_response)
-            is_agent_speaking = False
-            return
+                logger.info(f"URGENT RESPONSE: '{urgent_response}'")
+                
+                conversation_transcript.append({
+                    'role': 'assistant',
+                    'content': urgent_response,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'is_urgent': True
+                })
+                
+                try:
+                    db.add(ConversationTurn(
+                        call_sid=call_sid,
+                        role="assistant",
+                        content=urgent_response,
+                        created_at=datetime.utcnow()
+                    ))
+                    db.commit()
+                except Exception as e:
+                    logger.error(f"DB error: {e}")
+                
+                await stream_elevenlabs_audio(websocket, stream_sid, urgent_response)
+                is_agent_speaking = False
+                return
 
             # Get AI response
             is_agent_speaking = True
