@@ -303,6 +303,7 @@ async def handle_media_stream(websocket: WebSocket):
             is_agent_speaking = True
             
             try:
+                await asyncio.sleep(1)
                 acknowledgment = prompt_template_service.generate_rag_acknowledgment(
                     transcript,
                     current_agent_context
@@ -818,6 +819,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             is_agent_speaking = True
             
             try:
+                await asyncio.sleep(1)
                 acknowledgment = prompt_template_service.generate_rag_acknowledgment(
                     transcript,
                     current_agent_context
