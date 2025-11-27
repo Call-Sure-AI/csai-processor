@@ -718,7 +718,25 @@ async def handle_outbound_stream(websocket: WebSocket):
                 'content': transcript,
                 'timestamp': datetime.utcnow().isoformat()
             })
+
+            sentiment_analysis = prompt_template_service.detect_sentiment_and_urgency(
+                transcript,
+                agent
+            )
             
+            logger.info(f"Sentiment: {sentiment_analysis['sentiment']}, Urgency: {sentiment_analysis['urgency']}")
+            
+            if sentiment_analysis['urgency_keywords']:
+                logger.warning(f"URGENCY DETECTED: {sentiment_analysis['urgency_keywords']}")
+
+            conversation_transcript.append({
+                'role': 'user',
+                'content': transcript,
+                'timestamp': datetime.utcnow().isoformat(),
+                'sentiment': sentiment_analysis['sentiment'],
+                'urgency': sentiment_analysis['urgency']
+            })  
+
             # Save to DB
             try:
                 db.add(ConversationTurn(
@@ -730,11 +748,49 @@ async def handle_outbound_stream(websocket: WebSocket):
                 db.commit()
             except Exception as e:
                 logger.error(f"DB error: {e}")
+
+        if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
+            is_agent_speaking = True
+            urgent_response = sentiment_analysis['suggested_action']
             
+            logger.info(f"URGENT RESPONSE: '{urgent_response}'")
+            
+            conversation_transcript.append({
+                'role': 'assistant',
+                'content': urgent_response,
+                'timestamp': datetime.utcnow().isoformat(),
+                'is_urgent': True
+            })
+            
+            try:
+                db.add(ConversationTurn(
+                    call_sid=call_sid,
+                    role="assistant",
+                    content=urgent_response,
+                    created_at=datetime.utcnow()
+                ))
+                db.commit()
+            except Exception as e:
+                logger.error(f"DB error: {e}")
+            
+            await stream_elevenlabs_audio(websocket, stream_sid, urgent_response)
+            is_agent_speaking = False
+            return
+
             # Get AI response
             is_agent_speaking = True
             
             try:
+                acknowledgment = prompt_template_service.generate_rag_acknowledgment(
+                    transcript,
+                    agent
+                )
+                
+                logger.info(f"RAG Acknowledgment: '{acknowledgment}'")
+                
+                await stream_elevenlabs_audio(websocket, stream_sid, acknowledgment)
+                await asyncio.sleep(0.3)
+                
                 response_chunks = []
                 async for chunk in rag.get_answer(
                     company_id=company_id,
