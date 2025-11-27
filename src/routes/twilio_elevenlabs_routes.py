@@ -606,13 +606,12 @@ async def handle_outbound_connect(request: Request):
 
 @router.websocket("/outbound-stream")
 async def handle_outbound_stream(websocket: WebSocket):
-    """Outbound call streaming - mirrors inbound structure"""
+    """Outbound call streaming - mirrors media-stream with full agent routing"""
     
     try:
         logger.info("WebSocket connection attempt...")
         await websocket.accept()
         logger.info("WebSocket ACCEPTED")
-        
     except Exception as e:
         logger.error(f"Failed to accept WebSocket: {str(e)}")
         return
@@ -625,9 +624,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     
     if not call_sid:
         logger.info("No call_sid in query, waiting for Twilio 'start' event...")
-        
         try:
-            # Wait for Twilio to send the 'start' event
             for attempt in range(3):
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
                 data = json.loads(message)
@@ -638,13 +635,11 @@ async def handle_outbound_stream(websocket: WebSocket):
                 if event_type == "connected":
                     logger.info("Received 'connected' event")
                     continue
-                    
                 elif event_type == "start":
                     call_sid = data.get("start", {}).get("callSid")
                     first_message_data = data
                     logger.info(f"Extracted call_sid: {call_sid}")
                     break
-                    
         except asyncio.TimeoutError:
             logger.error("Timeout waiting for start event")
             await websocket.close(code=1008)
@@ -660,28 +655,21 @@ async def handle_outbound_stream(websocket: WebSocket):
         return
     
     logger.info(f"Call SID validated: {call_sid}")
- 
+    
+    # Get context from stored data
     context = call_context.get(call_sid, {})
     company_id = context.get("company_id")
-    agent_id = context.get("agent_id")
+    master_agent_id = context.get("agent_id")
     customer_name = context.get("customer_name", "")
-    campaign_id = context.get("campaign_id")
+    campaign_id = context.get("campaign_id", "")
     call_type = context.get("call_type", "outgoing")
     
-    logger.info(f"Company ID: {company_id}, Agent: {agent_id}")
+    logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     logger.info(f"Customer: {customer_name}, Campaign: {campaign_id}")
+
+    master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
+    current_agent_context = master_agent
     
-    # Get agent info
-    agent = await agent_config_service.get_agent_by_id(agent_id)
-    
-    if not agent:
-        logger.error(f"Agent {agent_id} not found!")
-        await websocket.close(code=1008, reason="Agent not found")
-        return
-    
-    logger.info(f"Agent: {agent['name']}")
-    
-    # Call metadata
     call_metadata = {
         'start_time': datetime.utcnow(),
         'from_number': from_number_global,
@@ -693,6 +681,22 @@ async def handle_outbound_stream(websocket: WebSocket):
     logger.info(f"Detected Company Id {company_id} for storing in Call Database")
     logger.info(f"Call Type: {call_type}")
     
+    if not master_agent:
+        logger.error(f"Master agent {master_agent_id} not found!")
+        await websocket.close(code=1008, reason="Master agent not found")
+        return
+    
+    logger.info(f"Master: {master_agent['name']}")
+
+    available_agents = await agent_config_service.get_company_agents(company_id)
+    specialized_agents = [
+        a for a in available_agents
+        if a['agent_id'] != master_agent_id
+    ]
+    
+    logger.info(f"Master: {master_agent['name']}")
+    logger.info(f"Specialized agents: {[a['name'] for a in specialized_agents]}")
+    
     # Initialize services
     db = SessionLocal()
     deepgram_service = DeepgramWebSocketService()
@@ -701,42 +705,42 @@ async def handle_outbound_stream(websocket: WebSocket):
     stream_sid = None
     is_agent_speaking = False
     greeting_sent = False
+
+    call_state = {
+        "first_interaction": True,
+        "interaction_count": 0
+    }
     
     try:
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
             nonlocal is_agent_speaking
+            nonlocal current_agent_context
             
             if is_agent_speaking or not transcript.strip():
                 return
             
             logger.info(f"CUSTOMER SAID: '{transcript}'")
-            
-            # Save customer message to transcript
-            conversation_transcript.append({
-                'role': 'user',
-                'content': transcript,
-                'timestamp': datetime.utcnow().isoformat()
-            })
 
             sentiment_analysis = prompt_template_service.detect_sentiment_and_urgency(
                 transcript,
-                agent
+                current_agent_context
             )
             
             logger.info(f"Sentiment: {sentiment_analysis['sentiment']}, Urgency: {sentiment_analysis['urgency']}")
             
             if sentiment_analysis['urgency_keywords']:
-                logger.warning(f"URGENCY DETECTED: {sentiment_analysis['urgency_keywords']}")
-
+                logger.warning(f"HIGH URGENCY DETECTED: {sentiment_analysis['urgency_keywords']}")
+            
+            # Save to transcript with sentiment
             conversation_transcript.append({
                 'role': 'user',
                 'content': transcript,
                 'timestamp': datetime.utcnow().isoformat(),
                 'sentiment': sentiment_analysis['sentiment'],
                 'urgency': sentiment_analysis['urgency']
-            })  
-
+            })
+            
             # Save to DB
             try:
                 db.add(ConversationTurn(
@@ -752,7 +756,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
                 is_agent_speaking = True
                 urgent_response = sentiment_analysis['suggested_action']
-            
+                
                 logger.info(f"URGENT RESPONSE: '{urgent_response}'")
                 
                 conversation_transcript.append({
@@ -776,14 +780,47 @@ async def handle_outbound_stream(websocket: WebSocket):
                 await stream_elevenlabs_audio(websocket, stream_sid, urgent_response)
                 is_agent_speaking = False
                 return
+            current_agent_id = master_agent_id
+            
+            if specialized_agents:
+                logger.info(f"Detecting intent for message #{call_state['interaction_count'] + 1}...")
+                
+                detected_agent = await intent_router_service.detect_intent(
+                    transcript,
+                    company_id,
+                    master_agent,
+                    specialized_agents
+                )
+                
+                if detected_agent:
+                    previous_agent_id = intent_router_service.get_current_agent(call_sid, master_agent_id)
+                    intent_router_service.set_current_agent(call_sid, detected_agent)
+                    current_agent_id = detected_agent
 
-            # Get AI response
+                    agent_info = await agent_config_service.get_agent_by_id(detected_agent)
+                    if agent_info:
+                        current_agent_context = agent_info
+                        
+                        if detected_agent != previous_agent_id and call_state["interaction_count"] > 0:
+                            logger.info(f"RE-ROUTING to {agent_info['name']}")
+                            routing_message = f"Let me connect you with our {agent_info['name']}."
+                            is_agent_speaking = True
+                            await stream_elevenlabs_audio(websocket, stream_sid, routing_message)
+                            await asyncio.sleep(0.5)
+                            is_agent_speaking = False
+                        else:
+                            logger.info(f"ROUTED to {agent_info['name']}")
+                else:
+                    logger.info(f"   Staying with MASTER")
+            
+            call_state["interaction_count"] += 1
+            
             is_agent_speaking = True
             
             try:
                 acknowledgment = prompt_template_service.generate_rag_acknowledgment(
                     transcript,
-                    agent
+                    current_agent_context
                 )
                 
                 logger.info(f"RAG Acknowledgment: '{acknowledgment}'")
@@ -795,27 +832,28 @@ async def handle_outbound_stream(websocket: WebSocket):
                 async for chunk in rag.get_answer(
                     company_id=company_id,
                     question=transcript,
-                    agent_id=agent_id,
+                    agent_id=current_agent_id,
                     call_sid=call_sid
                 ):
                     response_chunks.append(chunk)
                 
                 llm_response = "".join(response_chunks)
+                full_response = f"{acknowledgment} {llm_response}"
                 
-                # Save agent response to transcript
+                # Save to transcript
                 conversation_transcript.append({
                     'role': 'assistant',
-                    'content': llm_response,
+                    'content': full_response,
                     'timestamp': datetime.utcnow().isoformat()
                 })
                 
-                logger.info(f"AGENT ({agent_id}): '{llm_response[:100]}...'")
+                logger.info(f"AGENT ({current_agent_id}): '{llm_response[:100]}...'")
                 
                 # Save to DB
                 db.add(ConversationTurn(
                     call_sid=call_sid,
                     role="assistant",
-                    content=llm_response,
+                    content=full_response,
                     created_at=datetime.utcnow()
                 ))
                 db.commit()
@@ -825,6 +863,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                 
             except Exception as e:
                 logger.error(f"RAG error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 await stream_elevenlabs_audio(
                     websocket,
                     stream_sid,
@@ -849,20 +889,19 @@ async def handle_outbound_stream(websocket: WebSocket):
         
         logger.info(f"Deepgram connected")
         
-        # Process buffered start event if we have it
         if first_message_data and first_message_data.get("event") == "start":
             logger.info("Processing buffered start event...")
             stream_sid = first_message_data.get("streamSid")
             logger.info(f"STREAM STARTED: {stream_sid}")
             
-            # Send greeting for outbound call
             await asyncio.sleep(0.8)
+            
             greeting = prompt_template_service.generate_outbound_sales_greeting(
-                agent=agent,
+                agent=master_agent,
                 customer_name=customer_name,
                 campaign_id=campaign_id
             )
-
+            
             logger.info(f"Sending dynamic greeting: '{greeting}'")
             
             # Save greeting to transcript
@@ -894,10 +933,13 @@ async def handle_outbound_stream(websocket: WebSocket):
                         logger.info(f"STREAM STARTED: {stream_sid}")
                         
                         await asyncio.sleep(0.8)
-                        greeting = f"Hello {customer_name}! This is calling from your service provider. How may I help you today?"
+                        greeting = prompt_template_service.generate_outbound_sales_greeting(
+                            agent=master_agent,
+                            customer_name=customer_name,
+                            campaign_id=campaign_id
+                        )
                         logger.info(f"Sending greeting: '{greeting}'")
                         
-                        # Save greeting to transcript
                         conversation_transcript.append({
                             'role': 'assistant',
                             'content': greeting,
@@ -939,7 +981,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         logger.error(traceback.format_exc())
         
     finally:
-        # Cleanup (same pattern as inbound)
+        # Cleanup
         logger.info(f"Cleaning up {call_sid}")
         logger.info(f"From: {call_metadata.get('from_number')}")
         logger.info(f"To: {call_metadata.get('to_number')}")
@@ -955,11 +997,10 @@ async def handle_outbound_stream(websocket: WebSocket):
             logger.info(f"Duration: {call_duration}s")
             logger.info(f"Transcript turns: {len(conversation_transcript)}")
             
-            # Upload transcript to S3
             s3_urls = await call_recording_service.save_call_data(
                 call_sid=call_sid,
                 company_id=company_id,
-                agent_id=agent_id,
+                agent_id=master_agent_id,
                 transcript=conversation_transcript,
                 recording_url=None,
                 duration=call_duration,
@@ -970,7 +1011,6 @@ async def handle_outbound_stream(websocket: WebSocket):
             logger.info(f"S3 Upload Complete:")
             logger.info(f"Transcript: {s3_urls.get('transcript_url')}")
             
-            # Update database
             try:
                 call_record = db.query(Call).filter_by(call_sid=call_sid).first()
                 if call_record:
@@ -1012,6 +1052,8 @@ async def handle_outbound_stream(websocket: WebSocket):
             logger.error(traceback.format_exc())
         
         # Final cleanup
+        intent_router_service.clear_call(call_sid)
+        
         try:
             await deepgram_service.close_session(session_id)
         except:
