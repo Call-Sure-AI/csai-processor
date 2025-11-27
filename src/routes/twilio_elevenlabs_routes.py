@@ -153,6 +153,8 @@ async def handle_media_stream(websocket: WebSocket):
     logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
 
+    current_agent_context = master_agent
+
     call_metadata = {
         'start_time': datetime.utcnow(),
         'from_number': from_number_global,
@@ -195,6 +197,8 @@ async def handle_media_stream(websocket: WebSocket):
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
             nonlocal is_agent_speaking
+            nonlocal current_agent_context
+
             if is_agent_speaking or not transcript.strip():
                 return
             
@@ -208,7 +212,7 @@ async def handle_media_stream(websocket: WebSocket):
 
             sentiment_analysis = prompt_template_service.detect_sentiment_and_urgency(
                 transcript,
-                agent
+                current_agent_context
             )
 
             logger.info(f"Sentiment: {sentiment_analysis['sentiment']}, Urgency: {sentiment_analysis['urgency']}")
@@ -281,6 +285,7 @@ async def handle_media_stream(websocket: WebSocket):
                     agent_info = await agent_config_service.get_agent_by_id(detected_agent)
                     
                     if agent_info:
+                        current_agent_context = agent_info
                         if detected_agent != previous_agent_id and call_state["interaction_count"] > 0:
                             logger.info(f"RE-ROUTING to {agent_info['name']}")
                             routing_message = f"Let me connect you with our {agent_info['name']}."
@@ -300,7 +305,7 @@ async def handle_media_stream(websocket: WebSocket):
             try:
                 acknowledgment = prompt_template_service.generate_rag_acknowledgment(
                     transcript,
-                    agent
+                    current_agent_context
                 )
                 
                 logger.info(f"🔍 RAG Acknowledgment: '{acknowledgment}'")
