@@ -20,6 +20,7 @@ from services.call_recording_service import call_recording_service
 from database.models import ConversationTurn, Call
 from pydantic import BaseModel, Field
 from twilio.rest import Client
+from urlib.parse import quote
 
 twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
@@ -741,8 +742,13 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             # Send greeting for outbound call
             await asyncio.sleep(0.8)
-            greeting = f"Hello {customer_name}! This is calling from your service provider. How may I help you today?"
-            logger.info(f"Sending greeting: '{greeting}'")
+            greeting = prompt_template_service.generate_outbound_sales_greeting(
+                agent=agent,
+                customer_name=customer_name,
+                campaign_id=campaign_id
+            )
+
+            logger.info(f"Sending dynamic greeting: '{greeting}'")
             
             # Save greeting to transcript
             conversation_transcript.append({
@@ -939,7 +945,7 @@ async def initiate_outbound_call(
         callback_url = f"{base_url}/api/v1/twilio-elevenlabs/outbound-connect"
         callback_url += f"?company_id={request.company_id}"
         callback_url += f"&agent_id={request.agent_id}"
-        callback_url += f"&customer_name={request.customer_name}"
+        callback_url += f"&customer_name={quote(request.customer_name)}"
         if request.campaign_id:
             callback_url += f"&campaign_id={request.campaign_id}"
         
