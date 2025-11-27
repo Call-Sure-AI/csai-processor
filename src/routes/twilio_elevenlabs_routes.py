@@ -18,6 +18,10 @@ from services.agent_config_service import agent_config_service
 from services.prompt_template_service import prompt_template_service
 from services.call_recording_service import call_recording_service
 from database.models import ConversationTurn, Call
+from pydantic import BaseModel, Field
+from twilio.rest import Client
+
+twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"])
@@ -895,3 +899,106 @@ async def handle_outbound_stream(websocket: WebSocket):
         call_context.pop(call_sid, None)
         db.close()
         logger.info(f"Cleanup complete")
+
+class OutboundCallRequest(BaseModel):
+    to_number: str = Field(..., description="Phone number with country code")
+    company_id: str = Field(..., description="Company UUID")
+    agent_id: str = Field(..., description="Agent UUID")
+    customer_name: str = Field(default="", description="Customer name for greeting")
+    campaign_id: str = Field(default="", description="Campaign ID (optional)")
+
+@router.post("/initiate-outbound-call")
+async def initiate_outbound_call(
+    request: OutboundCallRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Initiate an outbound call via Twilio
+    
+    Test with Postman:
+    POST https://processor.callsure.ai/api/v1/twilio-elevenlabs/initiate-outbound-call
+    
+    Body (JSON):
+    {
+        "to_number": "+919830608824",
+        "company_id": "335daf57-3121-43f5-8776-03bf4c70eaae",
+        "agent_id": "43fca54b-eee1-4b1d-8e40-58fb5d23ec98",
+        "customer_name": "John Doe",
+        "campaign_id": "test-campaign-001"
+    }
+    """
+    try:
+        logger.info(f"Initiating outbound call to {request.to_number}")
+        logger.info(f"Company: {request.company_id}")
+        logger.info(f"Agent: {request.agent_id}")
+        logger.info(f"Customer: {request.customer_name}")
+
+        from_number = settings.twilio_phone_number
+
+        base_url = settings.base_url
+        callback_url = f"{base_url}/api/v1/twilio-elevenlabs/outbound-connect"
+        callback_url += f"?company_id={request.company_id}"
+        callback_url += f"&agent_id={request.agent_id}"
+        callback_url += f"&customer_name={request.customer_name}"
+        if request.campaign_id:
+            callback_url += f"&campaign_id={request.campaign_id}"
+        
+        logger.info(f"   Callback URL: {callback_url}")
+
+        call = twilio_client.calls.create(
+            to=request.to_number,
+            from_=from_number,
+            url=callback_url,
+            method='POST',
+            status_callback=f"{base_url}/api/v1/twilio/call-status",
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_method='POST',
+            record=True,
+            timeout=30
+        )
+        
+        logger.info(f"Call initiated successfully")
+        logger.info(f"Call SID: {call.sid}")
+        logger.info(f"Status: {call.status}")
+        
+        try:
+            call_record = Call(
+                call_sid=call.sid,
+                company_id=request.company_id,
+                from_number=from_number,
+                to_number=request.to_number,
+                call_type=CallType.outgoing,
+                status='initiated',
+                created_at=datetime.utcnow()
+            )
+            db.add(call_record)
+            db.commit()
+            logger.info(f"Call record created in database")
+        except Exception as db_error:
+            logger.error(f"Database error: {db_error}")
+            db.rollback()
+        
+        return {
+            "success": True,
+            "message": "Outbound call initiated successfully",
+            "data": {
+                "call_sid": call.sid,
+                "to_number": request.to_number,
+                "from_number": from_number,
+                "status": call.status,
+                "customer_name": request.customer_name,
+                "company_id": request.company_id,
+                "agent_id": request.agent_id
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error initiating outbound call: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        return {
+            "success": False,
+            "message": f"Failed to initiate call: {str(e)}",
+            "data": None
+        }
