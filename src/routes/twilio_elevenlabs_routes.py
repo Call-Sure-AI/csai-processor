@@ -749,9 +749,9 @@ async def handle_outbound_stream(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"DB error: {e}")
 
-        if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
-            is_agent_speaking = True
-            urgent_response = sentiment_analysis['suggested_action']
+            if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
+                is_agent_speaking = True
+                urgent_response = sentiment_analysis['suggested_action']
             
             logger.info(f"URGENT RESPONSE: '{urgent_response}'")
             
@@ -790,7 +790,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 
                 await stream_elevenlabs_audio(websocket, stream_sid, acknowledgment)
                 await asyncio.sleep(0.3)
-                
+
                 response_chunks = []
                 async for chunk in rag.get_answer(
                     company_id=company_id,
