@@ -766,7 +766,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 db.add(ConversationTurn(
                     call_sid=call_sid,
                     role="assistant",
-                    content=urgent_response,
+                    content=transcript,
                     created_at=datetime.utcnow()
                 ))
                 db.commit()
