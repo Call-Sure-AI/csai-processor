@@ -377,7 +377,6 @@ async def handle_media_stream(websocket: WebSocket):
             logger.info(f"STREAM STARTED: {stream_sid}")
             
             # Send greeting
-            await asyncio.sleep(0.8)
             greeting = prompt_template_service.generate_greeting(master_agent)
             logger.info(f"Sending greeting: '{greeting}'")
             await stream_elevenlabs_audio(websocket, stream_sid, greeting)
@@ -401,7 +400,6 @@ async def handle_media_stream(websocket: WebSocket):
                         stream_sid = data.get("streamSid")
                         logger.info(f"STREAM STARTED: {stream_sid}")
                         
-                        await asyncio.sleep(0.8)
                         greeting = prompt_template_service.generate_greeting(master_agent)
                         logger.info(f"Sending greeting: '{greeting}'")
                         await stream_elevenlabs_audio(websocket, stream_sid, greeting)
@@ -896,8 +894,6 @@ async def handle_outbound_stream(websocket: WebSocket):
             stream_sid = first_message_data.get("streamSid")
             logger.info(f"STREAM STARTED: {stream_sid}")
             
-            await asyncio.sleep(0.8)
-            
             greeting = prompt_template_service.generate_outbound_sales_greeting(
                 agent=master_agent,
                 customer_name=customer_name,
@@ -933,8 +929,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     if not greeting_sent:
                         stream_sid = data.get("streamSid")
                         logger.info(f"STREAM STARTED: {stream_sid}")
-                        
-                        await asyncio.sleep(0.8)
+
                         greeting = prompt_template_service.generate_outbound_sales_greeting(
                             agent=master_agent,
                             customer_name=customer_name,
