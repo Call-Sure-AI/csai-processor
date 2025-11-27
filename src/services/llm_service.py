@@ -6,7 +6,7 @@ import asyncio
 import json
 import httpx
 from config.settings import settings
-
+from services.prompt_template_service import prompt_template_service
 # Import function calling components
 from functions.functions_mainfest import format_tools_for_openai, get_tool_by_name
 from functions.function_executor import function_executor
@@ -341,28 +341,10 @@ class MultiProviderLLMService:
     
     def _get_system_prompt(self, context: Optional[Dict[str, Any]] = None) -> str:
         """Get system prompt based on context"""
-        base_prompt = """You a warm and professional receptionist at JamunJar, India's integrated Health & Wealth platform for people 40+.
-
-Your role: Greet callers, understand their needs, and provide helpful information about JamunJar's services.
-
-About JamunJar:
-- Health Services: Diagnostic tests, health checkups, physiotherapy, doctor consultations, chronic disease management
-- Financial Services: Health insurance, retirement planning, investments (NPS, mutual funds, FDs), financial planning
-- Contact: 9004910051 | Mumbai, Ghatkopar East
-
-Guidelines:
-- Keep responses under 80 words for natural phone conversation
-- Be empathetic and patient, especially with elderly callers
-- Use simple, clear language - avoid medical/financial jargon
-- Listen actively and acknowledge concerns
-- If caller needs specific service help, provide brief info and mention our specialists can assist further
-- Never mention other companies or competitors
-
-Example responses:
-"Thank you for calling JamunJar! How may I help you today?"
-"We offer both health and financial services for people 40 and above. What are you looking for specifically?"
-"Let me connect you with our health services team who can help you with that."
-"""
+        base_prompt = prompt_template_service.build_system_prompt_with_guardrails(
+            agent=agent,
+            call_type="incoming"
+        )
         
         if context:
             if context.get('call_type') == 'support':

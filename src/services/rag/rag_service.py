@@ -1,5 +1,5 @@
 # src/services/rag/rag_service.py
-from typing import List, Dict, Optional, Any, AsyncIterator
+from typing import List, Dict, Optional, Any, AsyncIterator, AsyncGenerator
 import logging
 import json
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -7,6 +7,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from config.settings import settings
 from services.agent_tools import TICKET_FUNCTIONS, execute_function
 from services.agent_config_service import agent_config_service
+from services.prompt_template_service import prompt_template_service
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,29 @@ class RAGService:
             logger.error(traceback.format_exc())
             yield "I apologize, I'm having trouble right now. Could you please repeat your question?"
 
+    async def get_answer_with_acknowledgment(
+        self,
+        company_id: str,
+        question: str,
+        agent_id: str,
+        call_sid: str = None,
+        agent: Dict = None
+    ) -> tuple[str, AsyncGenerator]:
+        """
+        Get answer with intelligent acknowledgment before RAG query
+        Returns: (acknowledgment_message, answer_generator)
+        """
+
+        acknowledgment = prompt_template_service.generate_rag_acknowledgment(question, agent)
+
+        answer_gen = self.get_answer(
+            company_id=company_id,
+            question=question,
+            agent_id=agent_id,
+            call_sid=call_sid
+        )
+        
+        return (acknowledgment, answer_gen)
 
 # Global instance
 rag_service = None
