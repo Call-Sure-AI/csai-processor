@@ -20,7 +20,7 @@ from services.call_recording_service import call_recording_service
 from database.models import ConversationTurn, Call
 from pydantic import BaseModel, Field
 from twilio.rest import Client
-from urlib.parse import quote
+from urllib.parse import quote
 
 twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
