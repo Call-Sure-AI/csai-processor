@@ -41,9 +41,15 @@ class IntentDetectionService:
         try:
             # Build conversation context
             context_messages = []
+            last_agent_question = ""
+            
             if conversation_history and len(conversation_history) > 0:
-                for msg in conversation_history[-4:]:  # Last 2 exchanges
+                for msg in conversation_history[-6:]:  # Last 3 exchanges
                     context_messages.append(f"{msg['role'].upper()}: {msg['content']}")
+                    
+                    # Track what agent last asked
+                    if msg['role'] == 'assistant':
+                        last_agent_question = msg['content']
             
             conversation_context = "\n".join(context_messages) if context_messages else "No prior conversation"
             
