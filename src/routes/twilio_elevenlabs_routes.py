@@ -857,7 +857,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     await stream_elevenlabs_audio(websocket, stream_sid, booking_result)
                     
                     is_agent_speaking = False
-                    asyncio.sleep(5)
+                    asyncio.sleep(15)
                     await websocket.close(code=1000, reason="Booking completed successfully")
                             
                     return
