@@ -315,12 +315,27 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
             'appreciate', 'wonderful', 'perfect', 'love', 'amazing'
         ]
         
+        rejection_phrases = [
+            "don't want", "dont want", "not interested", "no thanks", "not for me",
+            "don't need", "dont need", "not now", "maybe later", "call back later",
+            "not looking", "already have", "no thank you", "not today", "too busy",
+            "stop calling", "remove me", "take me off", "unsubscribe", "leave me alone"
+        ]
+
         # Detection logic
+        detected_rejection = any(phrase in message_lower for phrase in rejection_phrases)
         detected_high_urgency = [kw for kw in high_urgency_keywords if kw in message_lower]
         detected_medium_urgency = [kw for kw in medium_urgency_keywords if kw in message_lower]
         detected_negative = [kw for kw in negative_keywords if kw in message_lower]
         detected_positive = [kw for kw in positive_keywords if kw in message_lower]
-        detected_buying_intent = [kw for kw in buying_intent_keywords if kw in message_lower]
+
+        if detected_rejection:
+            detected_buying_intent = []
+            buying_intent = False
+            logger.info(f"🚫 Rejection detected: '{message_lower}' - No buying intent")
+        else:
+            detected_buying_intent = [kw for kw in buying_intent_keywords if kw in message_lower]
+            buying_intent = len(detected_buying_intent) > 0
         
         # Determine urgency level
         if detected_high_urgency:
@@ -334,9 +349,9 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
             urgency_keywords = []
         
         # Determine sentiment
-        if detected_negative:
+        if detected_rejection or detected_negative:
             sentiment = 'negative'
-            sentiment_keywords = detected_negative
+            sentiment_keywords = detected_negative if detected_negative else ['rejection']
         elif detected_positive:
             sentiment = 'positive'
             sentiment_keywords = detected_positive
@@ -359,7 +374,8 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
             'sentiment_keywords': sentiment_keywords,
             'suggested_action': suggested_action,
             'buying_intent': len(detected_buying_intent) > 0,
-            'buying_intent_keywords': detected_buying_intent 
+            'buying_intent_keywords': detected_buying_intent,
+            'rejection_detected': detected_rejection
         }
         
         logger.info(f"Sentiment Analysis: {result}")
