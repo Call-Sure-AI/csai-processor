@@ -36,7 +36,11 @@ class RAGService:
             openai_api_key=settings.openai_api_key
         )
     
-    def _build_dynamic_system_prompt(self, agent_config: Dict, context: str, call_type: str = "incoming") -> str:
+    def _build_dynamic_system_prompt(self, 
+        agent_config: Dict, 
+        context: str, 
+        call_type: str = "incoming",
+        conversation_context=conversation_context) -> str:
         """
         Build dynamic system prompt from agent configuration
         WITHOUT hardcoding company names
