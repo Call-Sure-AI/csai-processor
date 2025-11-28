@@ -21,6 +21,7 @@ from database.models import ConversationTurn, Call
 from pydantic import BaseModel, Field
 from twilio.rest import Client
 from urllib.parse import quote
+from services.agent_tools import execute_function
 
 twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
@@ -240,30 +241,15 @@ async def handle_media_stream(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"DB error: {e}")
 
+            urgent_acknowledgment = None
             if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
                 is_agent_speaking = True
-                urgent_response = sentiment_analysis['suggested_action']
+                urgent_acknowledgement = sentiment_analysis['suggested_action']
                 
-                logger.info(f"🚨 URGENT RESPONSE: '{urgent_response}'")
-                
-                conversation_transcript.append({
-                    'role': 'assistant',
-                    'content': urgent_response,
-                    'timestamp': datetime.utcnow().isoformat(),
-                    'is_urgent': True
-                })
-                
-                db.add(ConversationTurn(
-                    call_sid=call_sid,
-                    role="assistant",
-                    content=urgent_response,
-                    created_at=datetime.utcnow()
-                ))
-                db.commit()
+                logger.info(f"URGENT RESPONSE: '{urgent_response}'")
                 
                 await stream_elevenlabs_audio(websocket, stream_sid, urgent_response)
                 is_agent_speaking = False
-                return
 
             current_agent_id = master_agent_id
             
@@ -304,27 +290,71 @@ async def handle_media_stream(websocket: WebSocket):
             
             try:
                 await asyncio.sleep(1)
-                acknowledgment = prompt_template_service.generate_rag_acknowledgment(
-                    transcript,
-                    current_agent_context
-                )
+                if urgent_acknowledgment:
+                    acknowledgment = "Let me check what we can do to help you with this immediately."
+                else:
+                    acknowledgment = prompt_template_service.generate_rag_acknowledgment(
+                        transcript,
+                        current_agent_context
+                    )
                 
-                logger.info(f"🔍 RAG Acknowledgment: '{acknowledgment}'")
+                logger.info(f"RAG Acknowledgment: '{acknowledgment}'")
 
                 await stream_elevenlabs_audio(websocket, stream_sid, acknowledgment)
 
                 await asyncio.sleep(0.3)
-        
+
+                conversation_messages = []
+                for msg in conversation_transcript[-10:]:
+                    if msg['role'] in ['user', 'assistant']:
+                        conversation_messages.append({
+                            'role': msg['role'],
+                            'content': msg['content']
+                        })
+
+                if sentiment_analysis['urgency'] == 'high':
+                    conversation_messages.insert(0, {
+                        'role': 'system',
+                        'content': f"""[URGENT REQUEST DETECTED]
+        Keywords: {', '.join(sentiment_analysis['urgency_keywords'])}
+        Priority: HIGH
+        Instructions: 
+        1. First, try to find a solution in the available documentation
+        2. If documentation has a solution, provide it immediately with clear steps
+        3. If NO solution exists in documentation, automatically create a support ticket
+        4. Inform customer about the ticket and escalation
+        5. Maintain empathy and urgency throughout"""
+                    })
+
                 response_chunks = []
                 async for chunk in rag.get_answer(
                     company_id=company_id,
                     question=transcript,
                     agent_id=current_agent_id,
-                    call_sid=call_sid
+                    call_sid=call_sid,
+                    conversation_context=conversation_messages
                 ):
                     response_chunks.append(chunk)
                 
                 llm_response = "".join(response_chunks)
+                if sentiment_analysis['urgency'] == 'high' and not rag_found_solution:
+                    logger.warning(f"No RAG solution for urgent request - creating ticket")
+                    
+                    ticket_result = await execute_function(
+                        function_name="create_ticket",
+                        arguments={
+                            "title": f"Urgent: {transcript[:50]}",
+                            "description": f"High urgency request: {transcript}\n\nKeywords: {', '.join(sentiment_analysis['urgency_keywords'])}",
+                            "customer_phone": call_metadata.get('from_number'),
+                            "priority": "high"
+                        },
+                        company_id=company_id,
+                        call_sid=call_sid
+                    )
+                    
+                    llm_response = f"{llm_response} {ticket_result}"
+
+                full_response = f"{urgent_acknowledgment} {acknowledgment} {llm_response}" if urgent_acknowledgment else f"{acknowledgment} {llm_response}"
                 conversation_transcript.append({
                     'role': 'assistant',
                     'content': llm_response,
@@ -336,7 +366,7 @@ async def handle_media_stream(websocket: WebSocket):
                 db.add(ConversationTurn(
                     call_sid=call_sid,
                     role="assistant",
-                    content=llm_response,
+                    content=full_response,
                     created_at=datetime.utcnow()
                 ))
                 db.commit()
@@ -346,11 +376,36 @@ async def handle_media_stream(websocket: WebSocket):
                 
             except Exception as e:
                 logger.error(f"RAG error: {e}")
-                await stream_elevenlabs_audio(
-                    websocket,
-                    stream_sid,
-                    "I'm having trouble. Could you please repeat?"
-                )
+                if sentiment_analysis['urgency'] == 'high':
+                    logger.error(f"RAG failed for urgent request - creating ticket as fallback")
+                    
+                    try:                      
+                        ticket_result = await execute_function(
+                            function_name="create_ticket",
+                            arguments={
+                                "title": f"Urgent: {transcript[:50]}",
+                                "description": f"High urgency request (RAG failed): {transcript}",
+                                "customer_phone": call_metadata.get('from_number'),
+                                "priority": "critical"
+                            },
+                            company_id=company_id,
+                            call_sid=call_sid
+                        )
+                        
+                        await stream_elevenlabs_audio(websocket, stream_sid, ticket_result)
+                    except Exception as ticket_error:
+                        logger.error(f"Ticket creation failed: {ticket_error}")
+                        await stream_elevenlabs_audio(
+                            websocket,
+                            stream_sid,
+                            "I'm prioritizing your request and connecting you with a supervisor immediately."
+                        )
+                else:
+                    await stream_elevenlabs_audio(
+                        websocket,
+                        stream_sid,
+                        "I'm having trouble. Could you please repeat?"
+                    )
             finally:
                 is_agent_speaking = False
         
@@ -752,33 +807,16 @@ async def handle_outbound_stream(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"DB error: {e}")
 
+            urgent_acknowledgment = None
             if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
                 is_agent_speaking = True
-                urgent_response = sentiment_analysis['suggested_action']
+                urgent_acknowledgment = sentiment_analysis['suggested_action']
                 
-                logger.info(f"URGENT RESPONSE: '{urgent_response}'")
-                
-                conversation_transcript.append({
-                    'role': 'assistant',
-                    'content': urgent_response,
-                    'timestamp': datetime.utcnow().isoformat(),
-                    'is_urgent': True
-                })
-                
-                try:
-                    db.add(ConversationTurn(
-                        call_sid=call_sid,
-                        role="assistant",
-                        content=urgent_response,
-                        created_at=datetime.utcnow()
-                    ))
-                    db.commit()
-                except Exception as e:
-                    logger.error(f"DB error: {e}")
-                
+                is_agent_speaking = True
                 await stream_elevenlabs_audio(websocket, stream_sid, urgent_response)
+                await asyncio.sleep(0.3)
                 is_agent_speaking = False
-                return
+
             current_agent_id = master_agent_id
             
             if specialized_agents:
@@ -818,27 +856,78 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             try:
                 await asyncio.sleep(1)
-                acknowledgment = prompt_template_service.generate_rag_acknowledgment(
-                    transcript,
-                    current_agent_context
-                )
+                if urgent_acknowledgment:
+                    acknowledgment = "Let me check what we can do to help you with this immediately."
+                else:
+                    acknowledgment = prompt_template_service.generate_rag_acknowledgment(
+                        transcript,
+                        current_agent_context
+                    )
                 
                 logger.info(f"RAG Acknowledgment: '{acknowledgment}'")
                 
                 await stream_elevenlabs_audio(websocket, stream_sid, acknowledgment)
                 await asyncio.sleep(0.3)
 
+                conversation_messages = []
+                for msg in conversation_transcript[-10:]:
+                    if msg['role'] in ['user', 'assistant']:
+                        conversation_messages.append({
+                            'role': msg['role'],
+                            'content': msg['content']
+                        })
+
+                if sentiment_analysis['urgency'] == 'high':
+                    conversation_messages.insert(0, {
+                        'role': 'system',
+                        'content': f"""[URGENT REQUEST DETECTED]
+        Keywords: {', '.join(sentiment_analysis['urgency_keywords'])}
+        Priority: HIGH
+        Instructions: 
+        1. First, try to find a solution in the available documentation
+        2. If documentation has a solution, provide it immediately with clear steps
+        3. If NO solution exists in documentation, automatically create a support ticket
+        4. Inform customer about the ticket and escalation
+        5. Maintain empathy and urgency throughout"""
+                    })
+                
+     
+                if call_type == "outgoing" and campaign_id:
+                    conversation_messages.insert(0, {
+                        'role': 'system',
+                        'content': f"[Call metadata: campaign_id: {campaign_id}, customer: {customer_name}]"
+                    })
+
                 response_chunks = []
                 async for chunk in rag.get_answer(
                     company_id=company_id,
                     question=transcript,
                     agent_id=current_agent_id,
-                    call_sid=call_sid
+                    call_sid=call_sid,
+                    conversation_context=conversation_messages
                 ):
                     response_chunks.append(chunk)
                 
                 llm_response = "".join(response_chunks)
-                full_response = f"{acknowledgment} {llm_response}"
+
+                if sentiment_analysis['urgency'] == 'high' and not rag_found_solution:
+                    logger.warning(f"No RAG solution for urgent request - creating ticket")
+                    
+                    ticket_result = await execute_function(
+                        function_name="create_ticket",
+                        arguments={
+                            "title": f"Urgent: {transcript[:50]}",
+                            "description": f"High urgency request: {transcript}\n\nKeywords: {', '.join(sentiment_analysis['urgency_keywords'])}",
+                            "customer_phone": call_metadata.get('from_number'),
+                            "priority": "high"
+                        },
+                        company_id=company_id,
+                        call_sid=call_sid
+                    )
+                    
+                    # Append ticket creation response
+                    llm_response = f"{llm_response} {ticket_result}"
+                full_response = f"{urgent_acknowledgment} {acknowledgment} {llm_response}" if urgent_acknowledgment else f"{acknowledgment} {llm_response}"
                 
                 # Save to transcript
                 conversation_transcript.append({
@@ -865,11 +954,36 @@ async def handle_outbound_stream(websocket: WebSocket):
                 logger.error(f"RAG error: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                await stream_elevenlabs_audio(
-                    websocket,
-                    stream_sid,
-                    "I'm having trouble. Could you please repeat?"
-                )
+                if sentiment_analysis['urgency'] == 'high':
+                    logger.error(f"RAG failed for urgent request - creating ticket as fallback")
+                    
+                    try:                        
+                        ticket_result = await execute_function(
+                            function_name="create_ticket",
+                            arguments={
+                                "title": f"Urgent: {transcript[:50]}",
+                                "description": f"High urgency request (RAG failed): {transcript}",
+                                "customer_phone": call_metadata.get('from_number'),
+                                "priority": "critical"
+                            },
+                            company_id=company_id,
+                            call_sid=call_sid
+                        )
+                        
+                        await stream_elevenlabs_audio(websocket, stream_sid, ticket_result)
+                    except Exception as ticket_error:
+                        logger.error(f"Ticket creation failed: {ticket_error}")
+                        await stream_elevenlabs_audio(
+                            websocket,
+                            stream_sid,
+                            "I'm prioritizing your request and connecting you with a supervisor immediately."
+                        )
+                else:
+                    await stream_elevenlabs_audio(
+                        websocket,
+                        stream_sid,
+                        "I'm having trouble. Could you please repeat?"
+                    )
             finally:
                 is_agent_speaking = False
         

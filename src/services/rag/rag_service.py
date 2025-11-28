@@ -129,7 +129,35 @@ class RAGService:
                 context = "\n".join(context_parts)
             else:
                 logger.warning(f"No documents found for agent {agent_id[:8]}...")
-                context = "No specific documentation available. Use general knowledge and the business context provided."
+                if conversation_context and len(conversation_context) > 0:
+                    logger.info("Using conversation history as context")
+                    
+                    # Extract recent conversation summary
+                    recent_messages = conversation_context[-6:]
+                    conversation_summary = "\n".join([
+                        f"{msg.get('role', 'unknown').upper()}: {msg.get('content', '')}"
+                        for msg in recent_messages
+                    ])
+                    
+                    context = f"""**Previous Conversation Context**:
+    {conversation_summary}
+
+    **Instructions**: 
+    - Use the conversation history above to maintain context
+    - Reference what was discussed earlier in the conversation
+    - Don't ask for information already provided
+    - Continue the conversation naturally based on what the customer has told you
+    - If you need clarification, ask specific follow-up questions"""
+                else:
+                    context = """**No Documentation Available**
+
+    **Instructions**:
+    - Use general knowledge about the business context provided in your role
+    - Ask relevant questions to gather information needed
+    - Be helpful and guide the conversation toward booking or support
+    - Acknowledge what you can and cannot help with
+    - Offer to escalate if needed"""
+
 
             system_prompt = self._build_dynamic_system_prompt(agent_config, context)
 
@@ -143,7 +171,8 @@ class RAGService:
             
             # Add current question
             messages.append({"role": "user", "content": question})
-            
+            logger.info(f"Added {len(conversation_context[-10:])} messages from history")
+
             response = await self.llm_with_functions.ainvoke(messages)
             
             # Check for function call
@@ -153,13 +182,24 @@ class RAGService:
                 arguments = json.loads(function_call['arguments'])
                 
                 logger.info(f"Function call: {function_name} with args: {arguments}")
-                
+
+                campaign_id = None
+                if conversation_context:
+                    for msg in conversation_context:
+                        if msg.get('role') == 'system' and 'campaign_id' in msg.get('content', ''):
+                            import re
+                            match = re.search(r'campaign_id[:\s]+([A-Z0-9-]+)', msg['content'])
+                            if match:
+                                campaign_id = match.group(1)
+                                break
+                                            
                 # Execute function
                 function_result = await execute_function(
                     function_name=function_name,
                     arguments=arguments,
                     company_id=company_id,
-                    call_sid=call_sid or "unknown"
+                    call_sid=call_sid or "unknown",
+                    campaign_id=campaign_id
                 )
                 
                 yield function_result

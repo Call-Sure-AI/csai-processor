@@ -1,5 +1,6 @@
 from typing import Dict, Any, List
 from services.ticket_service import ticket_service
+from services.booking_service import booking_service
 from datetime import datetime
 import logging
 
@@ -100,7 +101,8 @@ async def execute_function(
     function_name: str,
     arguments: Dict[str, Any],
     company_id: str,
-    call_sid: str
+    call_sid: str,
+    campaign_id: str = None
 ) -> str:
     """Execute agent function and return response"""
     try:
@@ -138,7 +140,7 @@ async def execute_function(
             slot_start, slot_end = parse_time_slot(preferred_time, preferred_date)
             
             result = await booking_service.create_booking(
-                campaign_id=campaign_id or "CAMP-DEFAULT",
+                campaign_id=campaign_id,
                 customer_name=customer_name,
                 customer_phone=customer_phone,
                 slot_start=slot_start,
@@ -149,9 +151,12 @@ async def execute_function(
             
             if result.get("success"):
                 booking_id = result.get("booking_id")
+                logger.info(f"Booking created: {booking_id}")
                 return f"Perfect! I've scheduled your appointment for {preferred_date} at {preferred_time}. Your booking ID is {booking_id}. You'll receive a confirmation email shortly."
             else:
-                return "I'm having trouble booking that slot. Let me check other available times."
+                error = result.get("error", "Unknown error")
+                logger.error(f"Booking failed: {error}")
+                return "I'm having trouble booking that slot. Let me check other available times for you."
                         
         elif function_name == "get_ticket_status":
             ticket_id = arguments.get("ticket_id")

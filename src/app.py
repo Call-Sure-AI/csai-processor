@@ -27,9 +27,7 @@ from routes.elevenlabs_twilio_routes import router as elevenlabs_twilio_router, 
 from routes.webrtc_elevenlabs_routes import router as webrtc_elevenlabs_router, webrtc_lifespan
 from routes.elevenlabs_twilio_websocket_routes import router as elevenlabs_twilio_websocket_router
 from routes.s3 import router as s3_router
-from routes.campaign_routes import router as campaign_router
 from routes.document_routes import router as document_router
-from routes.outbound_routes import router as outbound_router
 from routes.twilio_elevenlabs_routes import router as twilio_elevenlabs_router
 from routes.elevenlabs_twilio_websocket_routes_optimized import router as optimized_router
 
@@ -136,7 +134,6 @@ def create_app() -> FastAPI:
 
     # Using elevenlabs for incoming call
     app.include_router(twilio_elevenlabs_router, tags=["Elevenlabs-Twilio"])
-    app.include_router(outbound_router, tags=["Outbound Calls"])
     
     app.include_router(document_router, prefix="/api/v1/documents", tags=["documents"])
     # Include WebRTC routes
@@ -162,8 +159,6 @@ def create_app() -> FastAPI:
     # Include ElevenLabs Twilio WebSocket routes
     app.include_router(elevenlabs_twilio_websocket_router, tags=["ElevenLabs WebSocket"])
     
-    # Campaign router
-    app.include_router(campaign_router, prefix="/campaign", tags=["Campaign Management"])
     app.include_router(optimized_router)
 
     # WebSocket endpoint

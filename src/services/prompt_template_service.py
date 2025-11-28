@@ -366,8 +366,8 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
         if urgency == 'high':
             if any(kw in ['lost', 'stolen', 'fraud'] for kw in keywords):
                 return (
-                    f"I understand this is urgent. Let me prioritize your case immediately. "
-                    f"For your security, I'm escalating this to our specialized team right away."
+                    f"I understand this is urgent regarding security. "
+                    f"Let me immediately look up what we can do to help you right away."
                 )
             elif any(kw in ['emergency', 'critical', 'severe'] for kw in keywords):
                 return (
