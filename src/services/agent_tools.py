@@ -96,30 +96,67 @@ TICKET_FUNCTIONS = [
 ]
 
 def parse_time_slot(preferred_time: str, date_str: str) -> tuple:
-    """Parse time slot from natural language"""
+    """Parse time slot from natural language with proper date handling"""
     try:
-        date = datetime.strptime(date_str, "%Y-%m-%d")
+        today = datetime.now().date()
+
+        try:
+            date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except:
+            try:
+                date = datetime.strptime(date_str, "%d-%m-%Y").date()
+            except:
+                logger.warning(f"Invalid date format: {date_str}, using tomorrow")
+                date = today + timedelta(days=1)
+
+        if date < today:
+            logger.warning(f"Date {date_str} is in the past, using tomorrow instead")
+            date = today + timedelta(days=1)
+
+        max_future_date = today + timedelta(days=90)
+        if date > max_future_date:
+            logger.warning(f"Date {date_str} is too far in future, using tomorrow")
+            date = today + timedelta(days=1)
         
+        # Parse time
         time_str = preferred_time.upper().replace(" ", "")
+        
         if "AM" in time_str or "PM" in time_str:
-            hour = int(time_str.split(":")[0])
+            time_parts = time_str.replace("AM", "").replace("PM", "").split(":")
+            hour = int(time_parts[0])
+            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+            
             if "PM" in time_str and hour != 12:
                 hour += 12
             elif "AM" in time_str and hour == 12:
                 hour = 0
         else:
-            hour = int(preferred_time.split(":")[0])
+            time_parts = preferred_time.split(":")
+            hour = int(time_parts[0])
+            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+
+        if hour < 9 or hour >= 18:
+            logger.warning(f"Time {preferred_time} is outside business hours, using 10 AM")
+            hour = 10
+            minute = 0
         
-        slot_start = date.replace(hour=hour, minute=0, second=0)
+        # Create datetime
+        slot_start = datetime.combine(date, datetime.min.time()).replace(hour=hour, minute=minute, second=0, microsecond=0)
         slot_end = slot_start + timedelta(minutes=30)
+        
+        logger.info(f"Parsed slot: {slot_start.isoformat()} to {slot_end.isoformat()}")
         
         return slot_start.isoformat(), slot_end.isoformat()
         
     except Exception as e:
-        logger.error(f"Error parsing time: {str(e)}")
+        logger.error(f"Error parsing time slot: {str(e)}")
+
         tomorrow = datetime.now() + timedelta(days=1)
         slot_start = tomorrow.replace(hour=10, minute=0, second=0, microsecond=0)
         slot_end = slot_start + timedelta(minutes=30)
+        
+        logger.info(f"Using fallback: {slot_start.isoformat()}")
+        
         return slot_start.isoformat(), slot_end.isoformat()
 
 async def execute_function(

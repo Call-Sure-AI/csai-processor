@@ -1170,19 +1170,26 @@ Objection Type: {objection_type}
 Reasoning: {intent_analysis.get('reasoning')}
 
 [SALES STRATEGY]
-- Intent suggests: {"CLOSE THE SALE" if buying_readiness >= 80 else "OVERCOME OBJECTIONS" if intent_type == 'objection' else "BUILD INTEREST"}
-- Tone: {intent_analysis.get('suggested_response_tone')}
-- Focus on addressing the customer's specific concern
-- {"Be enthusiastic and ask if they want to schedule" if buying_readiness >= 70 else "Be empathetic and build trust" if intent_type == 'objection' else "Be informative and highlight benefits"}
+...
 
 [BOOKING INSTRUCTIONS]
 When customer shows strong interest (readiness >= 70%), naturally ask:
 "Would you like to schedule a consultation with us?"
 
-ONLY use booking functions when customer explicitly agrees to book:
-1. First use check_slot_availability to verify time slot
-2. Then use verify_customer_email to confirm email
-3. Finally use create_booking after both confirmations
+BOOKING FLOW:
+1. Ask for preferred date: "What date works for you? We have availability starting from tomorrow ({(datetime.utcnow() + timedelta(days=1)).strftime('%B %d, %Y')})"
+2. Customer provides date
+3. Use check_slot_availability with format YYYY-MM-DD (example: 2025-11-29)
+4. Ask for email after slot confirmed
+5. Use verify_customer_email to spell and confirm
+6. Use create_booking with all confirmed details
+
+IMPORTANT DATE RULES:
+- Always suggest tomorrow's date as reference: {(datetime.utcnow() + timedelta(days=1)).strftime('%B %d, %Y')}
+- Accept dates in natural language (tomorrow, next Monday, etc.) and convert to YYYY-MM-DD
+- Dates must be in the future (tomorrow or later)
+- Business hours: 9 AM to 6 PM
+- Each slot is 30 minutes
 """
                         conversation_messages.insert(0, {
                             'role': 'system',
