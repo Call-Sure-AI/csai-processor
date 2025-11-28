@@ -783,8 +783,8 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             logger.info(f"Sentiment: {sentiment_analysis['sentiment']}, Urgency: {sentiment_analysis['urgency']}")
             
-            if sentiment_analysis['urgency_keywords']:
-                logger.warning(f"HIGH URGENCY DETECTED: {sentiment_analysis['urgency_keywords']}")
+            if sentiment_analysis.get('buying_intent_keywords'):
+                logger.info(f"BUYING INTENT DETECTED: {sentiment_analysis['buying_intent_keywords']}")
             
             # Save to transcript with sentiment
             conversation_transcript.append({
@@ -792,7 +792,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                 'content': transcript,
                 'timestamp': datetime.utcnow().isoformat(),
                 'sentiment': sentiment_analysis['sentiment'],
-                'urgency': sentiment_analysis['urgency']
+                'urgency': sentiment_analysis['urgency'],
+                'buying_intent': sentiment_analysis.get('buying_intent', False)
             })
             
             # Save to DB
@@ -806,6 +807,57 @@ async def handle_outbound_stream(websocket: WebSocket):
                 db.commit()
             except Exception as e:
                 logger.error(f"DB error: {e}")
+            
+            if call_type == "outgoing" and sentiment_analysis.get('buying_intent'):
+                logger.info(f"AUTO-BOOKING TRIGGERED for {customer_name}")
+                
+                is_agent_speaking = True
+
+                # Hardcoded for testing, change it
+                from datetime import timedelta
+                tomorrow = (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d")
+                default_time = "10:00 AM"
+                
+                try:
+                    booking_result = await execute_function(
+                        function_name="create_booking",
+                        arguments={
+                            "customer_name": customer_name,
+                            "customer_phone": call_metadata.get('to_number'),
+                            "preferred_date": tomorrow,
+                            "preferred_time": default_time,
+                            "customer_email": f"{customer_name.replace(' ', '').lower()}@temp.com",
+                            "notes": f"Auto-booked from outbound campaign {campaign_id}"
+                        },
+                        company_id=company_id,
+                        call_sid=call_sid,
+                        campaign_id=campaign_id
+                    )
+                    
+                    logger.info(f"AUTO-BOOKING RESULT: {booking_result}")
+
+                    conversation_transcript.append({
+                        'role': 'assistant',
+                        'content': booking_result,
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'auto_booked': True
+                    })
+
+                    db.add(ConversationTurn(
+                        call_sid=call_sid,
+                        role="assistant",
+                        content=booking_result,
+                        created_at=datetime.utcnow()
+                    ))
+                    db.commit()
+
+                    await stream_elevenlabs_audio(websocket, stream_sid, booking_result)
+                    
+                    is_agent_speaking = False
+                    return
+                    
+                except Exception as booking_error:
+                    logger.error(f"Auto-booking failed: {booking_error}")
 
             urgent_acknowledgment = None
             if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:

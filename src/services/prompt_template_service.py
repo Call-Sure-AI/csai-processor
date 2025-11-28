@@ -270,6 +270,13 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
             'dying', 'death', 'accident', 'injury', 'pain',
             'blocked', 'locked out', 'can\'t access', 'not working'
         ]
+
+        buying_intent_keywords = [
+            'yes', 'yeah', 'sure', 'okay', 'ok', 'definitely', 'absolutely',
+            'interested', 'want', 'would like', 'book', 'schedule', 'sign up',
+            'enroll', 'register', 'purchase', 'buy', 'get started', 'lets do it',
+            'sounds good', 'that works', 'ill take it', 'count me in'
+        ]
         
         # Add context-specific urgencies
         if 'health' in business_context or 'medical' in business_context:
@@ -313,6 +320,7 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
         detected_medium_urgency = [kw for kw in medium_urgency_keywords if kw in message_lower]
         detected_negative = [kw for kw in negative_keywords if kw in message_lower]
         detected_positive = [kw for kw in positive_keywords if kw in message_lower]
+        detected_buying_intent = [kw for kw in buying_intent_keywords if kw in message_lower]
         
         # Determine urgency level
         if detected_high_urgency:
@@ -332,6 +340,9 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
         elif detected_positive:
             sentiment = 'positive'
             sentiment_keywords = detected_positive
+        elif detected_positive or detected_buying_intent:
+            sentiment = 'positive'
+            sentiment_keywords = detected_positive + detected_buying_intent
         else:
             sentiment = 'neutral'
             sentiment_keywords = []
@@ -346,7 +357,9 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
             'urgency': urgency,
             'urgency_keywords': urgency_keywords,
             'sentiment_keywords': sentiment_keywords,
-            'suggested_action': suggested_action
+            'suggested_action': suggested_action,
+            'buying_intent': len(detected_buying_intent) > 0,
+            'buying_intent_keywords': detected_buying_intent 
         }
         
         logger.info(f"Sentiment Analysis: {result}")

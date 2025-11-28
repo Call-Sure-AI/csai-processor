@@ -35,7 +35,7 @@ class RAGService:
             openai_api_key=settings.openai_api_key
         )
     
-    def _build_dynamic_system_prompt(self, agent_config: Dict, context: str) -> str:
+    def _build_dynamic_system_prompt(self, agent_config: Dict, context: str, call_type: str = "incoming") -> str:
         """
         Build dynamic system prompt from agent configuration
         WITHOUT hardcoding company names
@@ -53,7 +53,47 @@ class RAGService:
         
         # Extract response settings
         max_tokens = agent_config.get('max_response_tokens', 300)
-        
+
+        if call_type == "outgoing":
+            sales_instructions = """
+    **OUTBOUND SALES CALL - SPECIAL INSTRUCTIONS**:
+
+    **YOUR GOAL**: Persuade the customer to book the service
+
+    **BOOKING TRIGGER**: When customer shows buying intent (says "yes", "interested", "I'd like to", "book", etc.):
+    - IMMEDIATELY use the create_booking function
+    - DO NOT ask for additional information (name, phone, date/time)
+    - Use information already available from the call context
+    - For booking date/time: Use "tomorrow 10:00 AM" as default
+    - Confirm booking after creation
+
+    **AVAILABLE DATA FOR BOOKING**:
+    - Customer name: Already provided in call context
+    - Customer phone: Already provided in call context
+    - Preferred date: Use tomorrow's date (system will calculate)
+    - Preferred time: Use "10:00 AM" as default
+    - Customer email: Can be derived from phone if needed
+
+    **DO NOT**:
+    - Ask "What date would you prefer?"
+    - Ask "What's your phone number?"
+    - Ask "What's your name?"
+    - Follow any booking procedures from documents - those are for manual booking
+
+    **EXAMPLE FLOW**:
+    Customer: "Yes, I'd like to book a consultation"
+    Agent: [Immediately calls create_booking with available data]
+    Agent: "Perfect! I've scheduled your appointment for tomorrow at 10 AM. Your booking ID is BK-123456. You'll receive a confirmation shortly. Is there anything else I can help you with?"
+
+    **PERSUASION TECHNIQUES**:
+    - Highlight key benefits from the service information
+    - Use social proof if available ("Many customers love this service")
+    - Create urgency ("Limited slots available this week")
+    - Keep it conversational and friendly
+    """
+        else:
+            sales_instructions = ""   
+
         # Build dynamic prompt
         system_prompt = f"""You are {agent_name}, a {tone} customer service representative on a live phone call.
 
@@ -64,6 +104,8 @@ class RAGService:
 
 **Available Information**:
 {context}
+
+{sales_instructions}
 
 **Communication Guidelines**:
 - Tone: {tone.title()}
@@ -87,14 +129,15 @@ class RAGService:
 - Respond naturally as in a phone conversation"""
 
         return system_prompt.strip()
-    
+ 
     async def get_answer(
         self,
         company_id: str,
         question: str,
         agent_id: Optional[str] = None,
         call_sid: Optional[str] = None,
-        conversation_context: Optional[List[Dict[str, str]]] = None
+        conversation_context: Optional[List[Dict[str, str]]] = None,
+        call_type: str = "incoming"
     ) -> AsyncIterator[str]:
         """Get streaming answer with dynamic prompts and function calling"""
         try:
@@ -159,7 +202,7 @@ class RAGService:
     - Offer to escalate if needed"""
 
 
-            system_prompt = self._build_dynamic_system_prompt(agent_config, context)
+            system_prompt = self._build_dynamic_system_prompt(agent_config, context, call_type)
 
             messages = [
                 {"role": "system", "content": system_prompt}

@@ -152,7 +152,7 @@ async def execute_function(
             if result.get("success"):
                 booking_id = result.get("booking_id")
                 logger.info(f"Booking created: {booking_id}")
-                return f"Perfect! I've scheduled your appointment for {preferred_date} at {preferred_time}. Your booking ID is {booking_id}. You'll receive a confirmation email shortly."
+                return f"Excellent choice, {customer_name}! I've scheduled your appointment for {preferred_date} at {preferred_time}. Your booking ID is {booking_id}. You'll receive a confirmation email shortly. Is there anything else I can help you with?"
             else:
                 error = result.get("error", "Unknown error")
                 logger.error(f"Booking failed: {error}")
