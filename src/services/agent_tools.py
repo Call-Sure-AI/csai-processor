@@ -39,6 +39,31 @@ TICKET_FUNCTIONS = [
         }
     },
     {
+        "name": "check_slot_availability",
+        "description": "Check if a time slot is available for booking. Use this BEFORE creating a booking to verify availability.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_phone": {"type": "string", "description": "Customer's phone number"},
+                "preferred_date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                "preferred_time": {"type": "string", "description": "Time like '10:00 AM' or '2:00 PM'"},
+                "campaign_id": {"type": "string", "description": "Campaign ID"}
+            },
+            "required": ["customer_phone", "preferred_date", "preferred_time", "campaign_id"]
+        }
+    },
+    {
+        "name": "verify_customer_email",
+        "description": "Verify customer email by spelling it out for confirmation. MUST be used before booking.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_email": {"type": "string", "description": "Customer's email address to verify"}
+            },
+            "required": ["customer_email"]
+        }
+    },
+    {
         "name": "create_booking",
         "description": "Schedule an appointment when customer agrees to book a time slot.",
         "parameters": {
@@ -129,6 +154,54 @@ async def execute_function(
             else:
                 return "I'm having trouble creating the ticket right now, but I've noted your issue. Let me connect you with a supervisor who can help immediately."
 
+        elif function_name == "check_slot_availability":
+            customer_phone = arguments.get("customer_phone")
+            preferred_date = arguments.get("preferred_date")
+            preferred_time = arguments.get("preferred_time")
+            campaign_id_arg = arguments.get("campaign_id", campaign_id)
+            
+            # Parse time slot
+            slot_start, slot_end = parse_time_slot(preferred_time, preferred_date)
+            
+            # Check availability
+            availability = await booking_service.check_slot_availability(
+                campaign_id=campaign_id_arg,
+                slot_start=slot_start,
+                slot_end=slot_end,
+                customer_phone=customer_phone
+            )
+            
+            if availability['available']:
+                return (
+                    f"Great news! {preferred_date} at {preferred_time} is available. "
+                    f"To proceed, I'll need your email address for the confirmation. "
+                    f"What's your email?"
+                )
+            else:
+                if availability['customer_already_booked']:
+                    existing = availability['existing_booking']
+                    return (
+                        f"I see you already have a booking on {preferred_date} at {preferred_time}. "
+                        f"Your booking ID is {existing.get('id')}. "
+                        f"Would you like to choose a different time?"
+                    )
+                else:
+                    return (
+                        f"I'm sorry, but {preferred_date} at {preferred_time} is fully booked. "
+                        f"Would you like me to suggest alternative times?"
+                    )
+        
+        elif function_name == "verify_customer_email":
+            customer_email = arguments.get("customer_email")
+            
+            # Spell out email
+            spelled_email = booking_service.spell_out_email(customer_email)
+            
+            return (
+                f"Let me confirm your email address. I have: {customer_email}. "
+                f"That's {spelled_email}. Is that correct?"
+            )
+            
         elif function_name == "create_booking":
             customer_name = arguments.get("customer_name")
             customer_phone = arguments.get("customer_phone")
