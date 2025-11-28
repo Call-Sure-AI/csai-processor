@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from twilio.rest import Client
 from urllib.parse import quote
 from services.agent_tools import execute_function
+from services.intent_detection_service import intent_detection_service
 
 twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
@@ -776,24 +777,20 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             logger.info(f"CUSTOMER SAID: '{transcript}'")
 
-            sentiment_analysis = prompt_template_service.detect_sentiment_and_urgency(
-                transcript,
-                current_agent_context
+            intent_analysis = await intent_detection_service.detect_customer_intent(
+                customer_message=transcript,
+                conversation_history=conversation_transcript,
+                call_type=call_type
             )
             
-            logger.info(f"Sentiment: {sentiment_analysis['sentiment']}, Urgency: {sentiment_analysis['urgency']}")
-            
-            if sentiment_analysis.get('buying_intent_keywords'):
-                logger.info(f"BUYING INTENT DETECTED: {sentiment_analysis['buying_intent_keywords']}")
-            
-            # Save to transcript with sentiment
+            # Save to transcript
             conversation_transcript.append({
                 'role': 'user',
                 'content': transcript,
                 'timestamp': datetime.utcnow().isoformat(),
-                'sentiment': sentiment_analysis['sentiment'],
-                'urgency': sentiment_analysis['urgency'],
-                'buying_intent': sentiment_analysis.get('buying_intent', False)
+                'intent_type': intent_analysis.get('intent_type'),
+                'sentiment': intent_analysis.get('sentiment'),
+                'buying_readiness': intent_analysis.get('buying_readiness')
             })
             
             # Save to DB
@@ -807,9 +804,15 @@ async def handle_outbound_stream(websocket: WebSocket):
                 db.commit()
             except Exception as e:
                 logger.error(f"DB error: {e}")
+
+            intent_type = intent_analysis.get('intent_type')
+            buying_readiness = intent_analysis.get('buying_readiness', 0)
+            should_book = intent_analysis.get('should_book', False)
+            should_persuade = intent_analysis.get('should_persuade', True)
+            should_end_call = intent_analysis.get('should_end_call', False)
             
-            if call_type == "outgoing" and sentiment_analysis.get('buying_intent'):
-                logger.info(f"AUTO-BOOKING TRIGGERED for {customer_name}")
+            if call_type == "outgoing" and should_book and buying_readiness >= 80:
+                logger.info(f"🚀 AUTO-BOOKING TRIGGERED (AI Confidence: {buying_readiness}%)")
                 
                 is_agent_speaking = True
 
@@ -858,6 +861,44 @@ async def handle_outbound_stream(websocket: WebSocket):
                     
                 except Exception as booking_error:
                     logger.error(f"Auto-booking failed: {booking_error}")
+
+            elif call_type == "outgoing" and intent_type == 'rejection' and not should_persuade:
+                logger.info(f"HARD REJECTION DETECTED - Final attempt to re-engage")
+                
+                is_agent_speaking = True
+                
+                # One last persuasion attempt
+                farewell_persuasion = (
+                    f"I completely understand, {customer_name}. "
+                    f"Just so you know, we're offering a special promotion this week. "
+                    f"Would you like to hear about it quickly before I let you go?"
+                )
+                
+                conversation_transcript.append({
+                    'role': 'assistant',
+                    'content': farewell_persuasion,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'rejection_handled': True
+                })
+                
+                try:
+                    db.add(ConversationTurn(
+                        call_sid=call_sid,
+                        role="assistant",
+                        content=farewell_persuasion,
+                        created_at=datetime.utcnow()
+                    ))
+                    db.commit()
+                except Exception as e:
+                    logger.error(f"DB error: {e}")
+                
+                await stream_elevenlabs_audio(websocket, stream_sid, farewell_persuasion)
+                
+                is_agent_speaking = False
+                return
+
+            else:
+                logger.info(f"PERSUASION MODE (Intent: {intent_type}, Readiness: {buying_readiness}%)")
 
             urgent_acknowledgment = None
             if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
@@ -908,8 +949,21 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             try:
                 await asyncio.sleep(1)
-                if urgent_acknowledgment:
-                    acknowledgment = "Let me check what we can do to help you with this immediately."
+                objection_type = intent_analysis.get('objection_type', 'none')
+                
+                if intent_type == 'objection':
+                    if objection_type == 'price':
+                        acknowledgment = "I understand cost is important. Let me show you the value we offer."
+                    elif objection_type == 'time':
+                        acknowledgment = "I appreciate you're busy. Let me quickly highlight the key benefits."
+                    elif objection_type == 'trust':
+                        acknowledgment = "That's a fair concern. Let me share what our customers say."
+                    else:
+                        acknowledgment = "I hear your concern. Let me address that for you."
+                elif intent_type == 'soft_interest':
+                    acknowledgment = "Great! Let me share more details that I think you'll find valuable."
+                elif intent_type == 'question':
+                    acknowledgment = "Excellent question! Let me get you that information."
                 else:
                     acknowledgment = prompt_template_service.generate_rag_acknowledgment(
                         transcript,
@@ -929,19 +983,25 @@ async def handle_outbound_stream(websocket: WebSocket):
                             'content': msg['content']
                         })
 
-                if sentiment_analysis['urgency'] == 'high':
-                    conversation_messages.insert(0, {
-                        'role': 'system',
-                        'content': f"""[URGENT REQUEST DETECTED]
-        Keywords: {', '.join(sentiment_analysis['urgency_keywords'])}
-        Priority: HIGH
-        Instructions: 
-        1. First, try to find a solution in the available documentation
-        2. If documentation has a solution, provide it immediately with clear steps
-        3. If NO solution exists in documentation, automatically create a support ticket
-        4. Inform customer about the ticket and escalation
-        5. Maintain empathy and urgency throughout"""
-                    })
+                if call_type == "outgoing":
+                    persuasion_context = f"""[AI INTENT ANALYSIS]
+    Customer Intent: {intent_type}
+    Sentiment: {intent_analysis.get('sentiment')}
+    Buying Readiness: {buying_readiness}%
+    Objection Type: {objection_type}
+    Reasoning: {intent_analysis.get('reasoning')}
+
+    [SALES STRATEGY]
+    - Intent suggests: {"CLOSE THE SALE" if buying_readiness >= 80 else "OVERCOME OBJECTIONS" if intent_type == 'objection' else "BUILD INTEREST"}
+    - Tone: {intent_analysis.get('suggested_response_tone')}
+    - Focus on addressing the customer's specific concern
+    - {"Be enthusiastic and confirm booking details" if buying_readiness >= 80 else "Be empathetic and build trust" if intent_type == 'objection' else "Be informative and highlight benefits"}
+    """
+                
+                conversation_messages.insert(0, {
+                    'role': 'system',
+                    'content': persuasion_context
+                })
                 
      
                 if call_type == "outgoing" and campaign_id:
