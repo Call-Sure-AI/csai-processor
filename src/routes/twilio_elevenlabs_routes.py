@@ -357,7 +357,7 @@ async def handle_media_stream(websocket: WebSocket):
                         current_agent_context
                     )
                 
-                logger.info(f"🔍 Acknowledgment: '{acknowledgment}'")
+                logger.info(f"Acknowledgment: '{acknowledgment}'")
 
                 current_audio_task = asyncio.create_task(
                     stream_elevenlabs_audio(websocket, stream_sid, acknowledgment, stop_audio_flag)
@@ -379,21 +379,25 @@ async def handle_media_stream(websocket: WebSocket):
                             'content': msg['content']
                         })
 
-                # Add urgency context if needed
+                conversation_messages.insert(0, {
+                    'role': 'system',
+                    'content': """[INCOMING SUPPORT CALL]
+                - Use create_ticket function for issues, problems, or requests
+                - DO NOT use any booking functions
+                - If customer wants to schedule, create a ticket instead"""
+                })
+
                 if sentiment_analysis['urgency'] == 'high':
                     conversation_messages.insert(0, {
                         'role': 'system',
                         'content': f"""[URGENT REQUEST DETECTED]
-Keywords: {', '.join(sentiment_analysis['urgency_keywords'])}
-Priority: HIGH
-Instructions: 
-1. First, try to find a solution in the available documentation
-2. If documentation has a solution, provide it immediately with clear steps
-3. If NO solution exists in documentation, automatically create a support ticket
-4. Inform customer about the ticket and escalation
-5. Maintain empathy and urgency throughout"""
+                Keywords: {', '.join(sentiment_analysis['urgency_keywords'])}
+                Priority: HIGH
+                Instructions: 
+                1. Try to find solution in documentation
+                2. If no solution, create support ticket with high priority
+                3. Inform customer about ticket ID"""
                     })
-
                 # Get RAG response
                 response_chunks = []
                 async for chunk in rag.get_answer(
