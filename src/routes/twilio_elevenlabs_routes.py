@@ -900,16 +900,6 @@ async def handle_outbound_stream(websocket: WebSocket):
             else:
                 logger.info(f"PERSUASION MODE (Intent: {intent_type}, Readiness: {buying_readiness}%)")
 
-            urgent_acknowledgment = None
-            if sentiment_analysis['urgency'] == 'high' and sentiment_analysis['suggested_action']:
-                is_agent_speaking = True
-                urgent_acknowledgment = sentiment_analysis['suggested_action']
-                
-                is_agent_speaking = True
-                await stream_elevenlabs_audio(websocket, stream_sid, urgent_response)
-                await asyncio.sleep(0.3)
-                is_agent_speaking = False
-
             current_agent_id = master_agent_id
             
             if specialized_agents:
