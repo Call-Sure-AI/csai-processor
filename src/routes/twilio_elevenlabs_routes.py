@@ -1021,25 +1021,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     response_chunks.append(chunk)
                 
                 llm_response = "".join(response_chunks)
-
-                if sentiment_analysis['urgency'] == 'high' and not rag_found_solution:
-                    logger.warning(f"No RAG solution for urgent request - creating ticket")
-                    
-                    ticket_result = await execute_function(
-                        function_name="create_ticket",
-                        arguments={
-                            "title": f"Urgent: {transcript[:50]}",
-                            "description": f"High urgency request: {transcript}\n\nKeywords: {', '.join(sentiment_analysis['urgency_keywords'])}",
-                            "customer_phone": call_metadata.get('from_number'),
-                            "priority": "high"
-                        },
-                        company_id=company_id,
-                        call_sid=call_sid
-                    )
-                    
-                    # Append ticket creation response
-                    llm_response = f"{llm_response} {ticket_result}"
-                full_response = f"{urgent_acknowledgment} {acknowledgment} {llm_response}" if urgent_acknowledgment else f"{acknowledgment} {llm_response}"
+                full_response = f"{acknowledgment} {llm_response}"
                 
                 # Save to transcript
                 conversation_transcript.append({
@@ -1066,36 +1048,11 @@ async def handle_outbound_stream(websocket: WebSocket):
                 logger.error(f"RAG error: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                if sentiment_analysis['urgency'] == 'high':
-                    logger.error(f"RAG failed for urgent request - creating ticket as fallback")
-                    
-                    try:                        
-                        ticket_result = await execute_function(
-                            function_name="create_ticket",
-                            arguments={
-                                "title": f"Urgent: {transcript[:50]}",
-                                "description": f"High urgency request (RAG failed): {transcript}",
-                                "customer_phone": call_metadata.get('from_number'),
-                                "priority": "critical"
-                            },
-                            company_id=company_id,
-                            call_sid=call_sid
-                        )
-                        
-                        await stream_elevenlabs_audio(websocket, stream_sid, ticket_result)
-                    except Exception as ticket_error:
-                        logger.error(f"Ticket creation failed: {ticket_error}")
-                        await stream_elevenlabs_audio(
-                            websocket,
-                            stream_sid,
-                            "I'm prioritizing your request and connecting you with a supervisor immediately."
-                        )
-                else:
-                    await stream_elevenlabs_audio(
-                        websocket,
-                        stream_sid,
-                        "I'm having trouble. Could you please repeat?"
-                    )
+                await stream_elevenlabs_audio(
+                    websocket,
+                    stream_sid,
+                    "I'm having trouble. Could you please repeat?"
+                )
             finally:
                 is_agent_speaking = False
         
