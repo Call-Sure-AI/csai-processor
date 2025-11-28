@@ -97,7 +97,6 @@ class RAGService:
 **CURRENT CUSTOMER STATUS**: 
 - Buying Readiness: {buying_readiness}%
 - Intent: {intent_type}
-- Customer Agreed To: {intent_analysis.get('customer_agreed_to', 'nothing')}
 
 **BOOKING TRIGGER**: 
 Only use create_booking function when customer EXPLICITLY says:
