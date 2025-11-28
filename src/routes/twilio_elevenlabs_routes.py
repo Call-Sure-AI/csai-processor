@@ -190,7 +190,8 @@ async def handle_media_stream(websocket: WebSocket):
     
     stream_sid = None
     try:
-        await current_audio_task
+        if current_audio_task:
+            await current_audio_task
     except asyncio.CancelledError:
         logger.info("Audio cancelled by interruption")
     finally:
@@ -228,7 +229,8 @@ async def handle_media_stream(websocket: WebSocket):
                         except asyncio.CancelledError:
                             pass
                 try:
-                    await current_audio_task
+                    if current_audio_task:
+                        await current_audio_task
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
@@ -288,7 +290,8 @@ async def handle_media_stream(websocket: WebSocket):
                 current_audio_task = asyncio.create_task(
                     stream_elevenlabs_audio(websocket, stream_sid, urgent_response, stop_audio_flag))
                 try:
-                    await current_audio_task
+                    if current_audio_task:
+                        await current_audio_task
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
@@ -325,7 +328,8 @@ async def handle_media_stream(websocket: WebSocket):
                                 stream_elevenlabs_audio(websocket, stream_sid, routing_message, stop_audio_flag))
                             await asyncio.sleep(0.5)
                             try:
-                                await current_audio_task
+                                if current_audio_task:
+                                    await current_audio_task
                             except asyncio.CancelledError:
                                 logger.info("Audio cancelled by interruption")
                             finally:
@@ -467,7 +471,8 @@ async def handle_media_stream(websocket: WebSocket):
                     ))
             finally:
                 try:
-                    await current_audio_task
+                    if current_audio_task:
+                        await current_audio_task
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
@@ -773,7 +778,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     first_message_data = None
     stop_audio_flag = {'stop': False}
     current_audio_task = None
-    
+
     if not call_sid:
         logger.info("No call_sid in query, waiting for Twilio 'start' event...")
         try:
@@ -856,7 +861,8 @@ async def handle_outbound_stream(websocket: WebSocket):
     
     stream_sid = None
     try:
-        await current_audio_task
+        if current_audio_task:
+            await current_audio_task
     except asyncio.CancelledError:
         logger.info("Audio cancelled by interruption")
     finally:
@@ -890,11 +896,13 @@ async def handle_outbound_stream(websocket: WebSocket):
                     if current_audio_task and not current_audio_task.done():
                         current_audio_task.cancel()
                         try:
-                            await current_audio_task
+                            if current_audio_task:
+                                await current_audio_task
                         except asyncio.CancelledError:
                             pass
                 try:
-                    await current_audio_task
+                    if current_audio_task:
+                        await current_audio_task
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
@@ -973,7 +981,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                 })
                     
                 try:
-                    await current_audio_task
+                    if current_audio_task:
+                        await current_audio_task
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
@@ -1021,7 +1030,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                 )
 
                 try:
-                    await current_audio_task
+                    if current_audio_task:
+                        await current_audio_task
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
@@ -1065,7 +1075,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                             await asyncio.sleep(0.5)
                             
                             try:
-                                await current_audio_task
+                                if current_audio_task:
+                                    await current_audio_task
                             except asyncio.CancelledError:
                                 logger.info("Audio cancelled by interruption")
                             finally:
@@ -1194,7 +1205,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                 )
             finally:
                 try:
-                    await current_audio_task
+                    if current_audio_task:
+                        await current_audio_task
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
