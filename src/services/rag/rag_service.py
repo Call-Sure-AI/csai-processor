@@ -8,6 +8,7 @@ from config.settings import settings
 from services.agent_tools import TICKET_FUNCTIONS, execute_function
 from services.agent_config_service import agent_config_service
 from services.prompt_template_service import prompt_template_service
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,35 @@ class RAGService:
         
         # Extract response settings
         max_tokens = agent_config.get('max_response_tokens', 300)
+
+        buying_readiness = 0
+        intent_type = "unknown"
+        sentiment = "neutral"
+        objection_type = "none"
+        
+        if conversation_context and call_type == "outgoing":
+            for msg in conversation_context:
+                if msg.get('role') == 'system':
+                    content = msg.get('content', '')
+                    
+                    # Extract all AI analysis data
+                    readiness_match = re.search(r'Buying Readiness:\s*(\d+)%', content)
+                    if readiness_match:
+                        buying_readiness = int(readiness_match.group(1))
+                        logger.info(f"Extracted Buying Readiness: {buying_readiness}%")
+                    
+                    intent_match = re.search(r'Customer Intent:\s*(\w+)', content)
+                    if intent_match:
+                        intent_type = intent_match.group(1)
+                        logger.info(f"Extracted Intent: {intent_type}")
+                    
+                    sentiment_match = re.search(r'Sentiment:\s*(\w+)', content)
+                    if sentiment_match:
+                        sentiment = sentiment_match.group(1)
+                    
+                    objection_match = re.search(r'Objection Type:\s*(\w+)', content)
+                    if objection_match:
+                        objection_type = objection_match.group(1)
 
         if call_type == "outgoing":
             sales_instructions = f"""
