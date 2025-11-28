@@ -40,7 +40,7 @@ class RAGService:
         agent_config: Dict, 
         context: str, 
         call_type: str = "incoming",
-        conversation_context=conversation_context) -> str:
+        conversation_context: Optional[List[Dict[str, str]]] = None) -> str:
         """
         Build dynamic system prompt from agent configuration
         WITHOUT hardcoding company names
@@ -243,7 +243,10 @@ Agent: [Immediately calls create_booking] ❌ WRONG
     - Offer to escalate if needed"""
 
 
-            system_prompt = self._build_dynamic_system_prompt(agent_config, context, call_type)
+            system_prompt = self._build_dynamic_system_prompt(agent_config, 
+                                context, 
+                                call_type,
+                                conversation_context=conversation_context)
 
             messages = [
                 {"role": "system", "content": system_prompt}
