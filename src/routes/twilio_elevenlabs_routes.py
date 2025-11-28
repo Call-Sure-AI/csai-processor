@@ -106,7 +106,8 @@ async def handle_media_stream(websocket: WebSocket):
     conversation_transcript = []
     call_sid = websocket.query_params.get("call_sid")
     logger.info(f"Query params: {dict(websocket.query_params)}")
-    
+    stop_audio_flag = {'stop': False}
+    current_audio_task = None  
     first_message_data = None
     
     if not call_sid:
@@ -201,9 +202,6 @@ async def handle_media_stream(websocket: WebSocket):
         "first_interaction": True,
         "interaction_count": 0
     }
-
-    stop_audio_flag = {'stop': False}
-    current_audio_task = None  
 
     try:
         async def on_deepgram_transcript(session_id: str, transcript: str):
@@ -773,6 +771,8 @@ async def handle_outbound_stream(websocket: WebSocket):
     logger.info(f"Query params: {dict(websocket.query_params)}")
     
     first_message_data = None
+    stop_audio_flag = {'stop': False}
+    current_audio_task = None
     
     if not call_sid:
         logger.info("No call_sid in query, waiting for Twilio 'start' event...")
@@ -869,10 +869,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         "interaction_count": 0
     }
     
-    try:
-        stop_audio_flag = {'stop': False}
-        current_audio_task = None
-        
+    try:     
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
             nonlocal is_agent_speaking
