@@ -1,7 +1,7 @@
 from typing import Dict, Any, List
 from services.ticket_service import ticket_service
 from services.booking_service import booking_service
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
