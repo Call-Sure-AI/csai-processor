@@ -332,7 +332,7 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
         if detected_rejection:
             detected_buying_intent = []
             buying_intent = False
-            logger.info(f"🚫 Rejection detected: '{message_lower}' - No buying intent")
+            logger.info(f"Rejection detected: '{message_lower}' - No buying intent")
         else:
             detected_buying_intent = [kw for kw in buying_intent_keywords if kw in message_lower]
             buying_intent = len(detected_buying_intent) > 0
