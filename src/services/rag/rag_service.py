@@ -55,42 +55,49 @@ class RAGService:
         max_tokens = agent_config.get('max_response_tokens', 300)
 
         if call_type == "outgoing":
-            sales_instructions = """
-    **OUTBOUND SALES CALL - SPECIAL INSTRUCTIONS**:
+            sales_instructions = f"""
+**OUTBOUND SALES CALL - SPECIAL INSTRUCTIONS**:
 
-    **YOUR GOAL**: Persuade the customer to book the service
+**YOUR GOAL**: Persuade the customer to book the service
 
-    **BOOKING TRIGGER**: When customer shows buying intent (says "yes", "interested", "I'd like to", "book", etc.):
-    - IMMEDIATELY use the create_booking function
-    - DO NOT ask for additional information (name, phone, date/time)
-    - Use information already available from the call context
-    - For booking date/time: Use "tomorrow 10:00 AM" as default
-    - Confirm booking after creation
+**CURRENT CUSTOMER STATUS**: 
+- Buying Readiness: {buying_readiness}%
+- Intent: {intent_type}
+- Customer Agreed To: {intent_analysis.get('customer_agreed_to', 'nothing')}
 
-    **AVAILABLE DATA FOR BOOKING**:
-    - Customer name: Already provided in call context
-    - Customer phone: Already provided in call context
-    - Preferred date: Use tomorrow's date (system will calculate)
-    - Preferred time: Use "10:00 AM" as default
-    - Customer email: Can be derived from phone if needed
+**BOOKING TRIGGER**: 
+Only use create_booking function when customer EXPLICITLY says:
+- "Book it"
+- "Schedule me"
+- "Sign me up"
+- "I want to book an appointment"
+- "Let's do it" (in context of booking)
 
-    **DO NOT**:
-    - Ask "What date would you prefer?"
-    - Ask "What's your phone number?"
-    - Ask "What's your name?"
-    - Follow any booking procedures from documents - those are for manual booking
+**DO NOT BOOK when customer says:**
+- "Yes" (to hearing more info)
+- "Tell me more"
+- "I'm interested"
+- "Okay" (without context)
 
-    **EXAMPLE FLOW**:
-    Customer: "Yes, I'd like to book a consultation"
-    Agent: [Immediately calls create_booking with available data]
-    Agent: "Perfect! I've scheduled your appointment for tomorrow at 10 AM. Your booking ID is BK-123456. You'll receive a confirmation shortly. Is there anything else I can help you with?"
+**CURRENT STAGE:**
+{f"CLOSING STAGE - Customer is {buying_readiness}% ready. Ask directly: 'Would you like me to schedule an appointment for you?'" if buying_readiness >= 70 else f"INTEREST BUILDING STAGE - Customer is {buying_readiness}% ready. Focus on benefits and value."}
 
-    **PERSUASION TECHNIQUES**:
-    - Highlight key benefits from the service information
-    - Use social proof if available ("Many customers love this service")
-    - Create urgency ("Limited slots available this week")
-    - Keep it conversational and friendly
-    """
+**CONVERSATION FLOW:**
+1. Build interest with benefits (if readiness < 70%)
+2. Address objections empathetically
+3. When readiness >= 70%, ask: "Would you like to schedule a consultation?"
+4. ONLY after explicit booking confirmation, use create_booking
+
+**Example Good Flow:**
+Customer: "Yes, I'd like to hear about it"
+Agent: "Great! [Explains benefits]. Would you like to schedule a consultation?"
+Customer: "Yes, book me"
+Agent: [Calls create_booking]
+
+**Example Bad Flow (DON'T DO THIS):**
+Customer: "Yes, tell me more"
+Agent: [Immediately calls create_booking] ❌ WRONG
+"""
         else:
             sales_instructions = ""   
 

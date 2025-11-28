@@ -812,7 +812,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             should_end_call = intent_analysis.get('should_end_call', False)
             
             if call_type == "outgoing" and should_book and buying_readiness >= 80:
-                logger.info(f"🚀 AUTO-BOOKING TRIGGERED (AI Confidence: {buying_readiness}%)")
+                logger.info(f"AUTO-BOOKING TRIGGERED (AI Confidence: {buying_readiness}%)")
                 
                 is_agent_speaking = True
 

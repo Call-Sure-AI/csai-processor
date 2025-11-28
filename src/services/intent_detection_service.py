@@ -50,28 +50,45 @@ class IntentDetectionService:
             # prompt for intent detection
             system_prompt = f"""You are an expert at analyzing customer intent in {call_type} sales calls.
 
-Analyze the customer's response and classify their intent precisely.
+**CRITICAL CONTEXT AWARENESS:**
+- When customer says "yes", "okay", "sure" etc., you MUST understand what they're agreeing to
+- Look at the LAST AGENT MESSAGE to understand context
+- "Yes" to hearing more information ≠ "Yes" to buying/booking
+- Only mark as strong_buying if customer explicitly confirms they want to PURCHASE/BOOK/SIGN UP
 
 **Intent Types:**
-1. **strong_buying**: Clear confirmation (e.g., "yes", "book it", "let's do it", "I'm ready")
-2. **soft_interest**: Interested but not ready to commit (e.g., "tell me more", "I'm interested", "maybe")
-3. **objection**: Has concerns but not rejecting (e.g., "too expensive", "not sure", "need to think")
-4. **rejection**: Clear refusal (e.g., "not interested", "no thanks", "don't call again")
-5. **question**: Asking for information (e.g., "what's included?", "how much?")
-6. **neutral**: General response (e.g., "okay", "I see")
+1. **strong_buying**: EXPLICIT confirmation to purchase/book/commit
+   - Examples: "yes, book it", "I'll take it", "sign me up", "let's schedule it"
+   - NOT: "yes, tell me more", "yes, I'm interested", "yes, I'll hear about it"
 
-**Sentiment:**
-- positive: Friendly, open, engaged
-- negative: Hostile, annoyed, frustrated
-- neutral: Indifferent, matter-of-fact
+2. **soft_interest**: Interested/willing to learn more but NOT ready to commit
+   - Examples: "yes, tell me more", "I'm interested", "yes, I'll hear about it", "okay, what is it?"
 
-**Buying Readiness:** 0-100 scale
-- 80-100: Ready to buy now
-- 50-79: Interested, needs persuasion
-- 20-49: Mild interest, significant persuasion needed
-- 0-19: Not interested or hostile
+3. **objection**: Has concerns but not rejecting
+   - Examples: "too expensive", "not sure", "need to think"
 
-**Output ONLY valid JSON** in this exact format:
+4. **rejection**: Clear refusal
+   - Examples: "not interested", "no thanks", "don't call again"
+
+5. **question**: Asking for information
+   - Examples: "what's included?", "how much?", "when is it available?"
+
+6. **neutral**: General response
+   - Examples: "okay", "I see", "hmm"
+
+**Buying Readiness Scale (0-100):**
+- **80-100**: EXPLICITLY agreed to book/purchase/sign up
+- **60-79**: Interested in learning more, asked good questions
+- **40-59**: Willing to listen, mild interest
+- **20-39**: Skeptical, has objections
+- **0-19**: Not interested or hostile
+
+**IMPORTANT RULES:**
+1. If customer says "yes" and last agent question was about hearing more info → soft_interest (50-60%)
+2. If customer says "yes" and last agent question was about booking → strong_buying (85-100%)
+3. Context matters more than keywords!
+
+**Output ONLY valid JSON:**
 {{
     "intent_type": "strong_buying|soft_interest|objection|rejection|question|neutral",
     "sentiment": "positive|negative|neutral",
@@ -80,17 +97,26 @@ Analyze the customer's response and classify their intent precisely.
     "should_persuade": true/false,
     "should_end_call": true/false,
     "objection_type": "price|time|trust|need|other|none",
-    "reasoning": "brief explanation",
-    "suggested_response_tone": "enthusiastic|empathetic|informative|polite_farewell"
+    "reasoning": "brief explanation including what customer is agreeing to",
+    "suggested_response_tone": "enthusiastic|empathetic|informative|polite_farewell",
+    "customer_agreed_to": "hearing_more|booking|nothing|rejection"
 }}"""
 
             user_prompt = f"""**Conversation Context:**
-{conversation_context}
+            {conversation_context}
 
-**Customer's Latest Response:**
-"{customer_message}"
+            **Last Agent Message (IMPORTANT for context):**
+            "{last_agent_question}"
 
-Analyze this response and provide the JSON output."""
+            **Customer's Latest Response:**
+            "{customer_message}"
+
+            **Analysis Task:**
+            1. What did the agent last ask the customer?
+            2. What is the customer responding to?
+            3. Is this agreement to BOOK or just to HEAR MORE?
+
+            Provide the JSON output."""
 
             # Call OpenAI
             response = await self.client.chat.completions.create(
