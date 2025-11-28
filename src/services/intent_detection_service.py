@@ -102,21 +102,20 @@ class IntentDetectionService:
     "customer_agreed_to": "hearing_more|booking|nothing|rejection"
 }}"""
 
-            user_prompt = f"""**Conversation Context:**
-            {conversation_context}
+            user_prompt = (
+                f"**Conversation Context:**\n"
+                f"{conversation_context}\n\n"
+                f"**Last Agent Message (IMPORTANT for context):**\n"
+                f'"{last_agent_question}"\n\n'
+                f"**Customer's Latest Response:**\n"
+                f'"{customer_message}"\n\n'
+                f"**Analysis Task:**\n"
+                f"1. What did the agent last ask the customer?\n"
+                f"2. What is the customer responding to?\n"
+                f"3. Is this agreement to BOOK or just to HEAR MORE?\n\n"
+                f"Provide the JSON output."
+            )
 
-            **Last Agent Message (IMPORTANT for context):**
-            "{last_agent_question}"
-
-            **Customer's Latest Response:**
-            "{customer_message}"
-
-            **Analysis Task:**
-            1. What did the agent last ask the customer?
-            2. What is the customer responding to?
-            3. Is this agreement to BOOK or just to HEAR MORE?
-
-            Provide the JSON output."""
 
             # Call OpenAI
             response = await self.client.chat.completions.create(
