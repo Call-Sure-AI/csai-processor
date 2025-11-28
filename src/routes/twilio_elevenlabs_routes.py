@@ -107,6 +107,8 @@ async def handle_media_stream(websocket: WebSocket):
     call_sid = websocket.query_params.get("call_sid")
     logger.info(f"Query params: {dict(websocket.query_params)}")
     stop_audio_flag = {'stop': False}
+
+    is_agent_speaking = True
     current_audio_task = None  
     first_message_data = None
     
@@ -776,6 +778,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     logger.info(f"Query params: {dict(websocket.query_params)}")
     
     first_message_data = None
+    is_agent_speaking = True
     stop_audio_flag = {'stop': False}
     current_audio_task = None
 
