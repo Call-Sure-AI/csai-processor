@@ -13,7 +13,6 @@ from database.config import init_database, close_database, get_db
 from database.models import Base
 from services.vector_store.qdrant_service import QdrantService
 from services.rag.rag_service import RAGService
-from routes.twilio_routes import router as twilio_router
 from routes.s3 import router as s3_router
 from routes.document_routes import router as document_router
 from routes.twilio_elevenlabs_routes import router as twilio_elevenlabs_router
@@ -106,13 +105,8 @@ def create_app() -> FastAPI:
 
     # Using elevenlabs for incoming call
     app.include_router(twilio_elevenlabs_router, tags=["Elevenlabs-Twilio"])
-    
     app.include_router(document_router, prefix="/api/v1/documents", tags=["documents"])
-
     app.include_router(s3_router, prefix="/api/v1/s3", tags=["S3"])
-    
-    # Include Twilio routes
-    app.include_router(twilio_router, prefix="/api/v1/twilio", tags=["Twilio Voice"])
 
     # Statistics endpoint
     @app.get("/stats")
