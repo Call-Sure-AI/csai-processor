@@ -745,7 +745,6 @@ async def process_and_respond_incoming(
     company_id: str,
     conversation_transcript: list,
     sentiment_analysis: dict,
-    intent_analysis: dict,
     urgent_acknowledgment: str = None,
     call_metadata: dict = None
 ):
@@ -755,16 +754,14 @@ async def process_and_respond_incoming(
     
     try:
         # Determine if we should use RAG
-        rag_decision = should_use_rag(transcript, conversation_transcript, intent_analysis)
+        rag_decision = should_use_rag(transcript, conversation_transcript, None)
         
         logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
-        logger.info(f"Buying Readiness: {intent_analysis.get('buying_readiness', 0)}%")
         
         # If direct response available, use it
         if not rag_decision['use_rag'] and rag_decision['direct_response']:
             logger.info(f"Using direct response: '{rag_decision['direct_response']}'")
             
-            # Save to transcript
             conversation_transcript.append({
                 'role': 'assistant',
                 'content': rag_decision['direct_response'],
@@ -772,7 +769,6 @@ async def process_and_respond_incoming(
                 'rag_used': False
             })
             
-            # Save to DB
             db.add(ConversationTurn(
                 call_sid=call_sid,
                 role="assistant",
@@ -781,17 +777,12 @@ async def process_and_respond_incoming(
             ))
             db.commit()
             
-            # Stream response directly
             await stream_elevenlabs_audio_with_playback(
                 websocket, stream_sid, rag_decision['direct_response'], stop_audio_flag
             )
             return
         
-        # If booking action, function calls will handle (no acknowledgment needed)
-        if rag_decision['reason'] == 'booking_action':
-            logger.info("Booking action detected - skipping acknowledgment, function will handle")
-        
-        # Build conversation context for RAG
+        # Build conversation context
         conversation_messages = []
         for msg in conversation_transcript[-10:]:
             if msg['role'] in ['user', 'assistant']:
@@ -800,14 +791,47 @@ async def process_and_respond_incoming(
                     'content': msg['content']
                 })
         
+        # Single intelligent prompt for incoming support
+        support_context = f"""[INCOMING SUPPORT CALL]
+Customer's Sentiment: {sentiment_analysis.get('sentiment', 'neutral')}
+Urgency Level: {sentiment_analysis.get('urgency', 'normal')}
+Customer's Current Message: "{transcript}"
+
+[INTELLIGENT RESPONSE GUIDELINES]
+
+You are on a LIVE SUPPORT PHONE CALL. Adapt your response naturally based on what the customer needs:
+
+**RESPONSE LENGTH - Adapt Based on Customer Request:**
+- If customer says "tell me more", "explain", "how do I" → Give DETAILED step-by-step help (4-6 complete sentences)
+- If customer asks a specific question → Answer COMPLETELY in 2-4 sentences
+- If customer's question is complex (long message) → Provide thorough assistance
+- If customer gives simple acknowledgment ("okay", "got it") → Brief confirmation (1-2 sentences)
+- If customer is frustrated or urgent → Be direct and solution-focused immediately
+
+**SENTENCE COMPLETION - CRITICAL:**
+- ALWAYS complete every sentence
+- NEVER stop mid-sentence or mid-thought
+- End naturally with proper punctuation (. ! ?)
+- When your solution is complete, stop naturally
+
+**SUPPORT BEST PRACTICES:**
+- Match the customer's urgency and tone
+- If they need detailed help, provide it fully
+- If issue is simple, keep it brief but helpful
+- Use create_ticket function for issues requiring follow-up
+- Always be solution-focused and clear
+
+**IMPORTANT:**
+- DO NOT use booking functions
+- If customer wants to schedule, create a ticket instead
+- This is a phone conversation - be conversational and empathetic
+- Respond completely to what they asked
+- Trust your judgment on appropriate response length
+"""
+        
         conversation_messages.insert(0, {
             'role': 'system',
-            'content': """[INCOMING SUPPORT CALL]
-- Use create_ticket function for issues, problems, or requests
-- DO NOT use any booking functions
-- If customer wants to schedule, create a ticket instead
-- Keep responses concise and under 100 words
-- Be direct and helpful"""
+            'content': support_context
         })
         
         if sentiment_analysis['urgency'] == 'high':
@@ -816,13 +840,15 @@ async def process_and_respond_incoming(
                 'content': f"""[URGENT REQUEST DETECTED]
 Keywords: {', '.join(sentiment_analysis['urgency_keywords'])}
 Priority: HIGH
+
 Instructions:
 1. Try to find solution in documentation
-2. If no solution, create support ticket with high priority
-3. Inform customer about ticket ID"""
+2. If no immediate solution, create support ticket with high priority
+3. Inform customer about ticket ID and next steps
+"""
             })
         
-        # Get RAG response with token limit
+        # Get RAG response - OpenAI decides everything
         response_chunks = []
         async for chunk in rag.get_answer(
             company_id=company_id,
@@ -871,7 +897,7 @@ Instructions:
         ))
         db.commit()
         
-        # Stream LLM response (NO acknowledgment before this)
+        # Stream LLM response
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, llm_response, stop_audio_flag
         )
@@ -985,27 +1011,49 @@ Sentiment: {intent_analysis.get('sentiment')}
 Buying Readiness: {buying_readiness}%
 Objection Type: {objection_type}
 Reasoning: {intent_analysis.get('reasoning')}
+Customer's Current Message: "{transcript}"
 
-[SALES STRATEGY]
-- Keep responses concise (under 100 words)
-- Be natural and conversational
-- Focus on benefits, not features
-- Address objections directly
+[INTELLIGENT RESPONSE GUIDELINES]
 
-[BOOKING INSTRUCTIONS]
-When customer shows strong interest (readiness >= 70%), naturally ask:
-"Would you like to schedule a consultation with us?"
+You are on a LIVE PHONE CALL. Adapt your response naturally based on what the customer is asking:
 
-BOOKING FLOW:
+**RESPONSE LENGTH - Adapt Based on Customer Signals:**
+- If customer says "tell me more", "continue", "explain", "I want to know more" → Give DETAILED response (4-6 complete sentences with specifics)
+- If customer asks a specific question → Answer COMPLETELY in 2-4 sentences
+- If customer gives simple acknowledgment ("okay", "yes", "I see") → Brief 1-2 sentence follow-up or next point
+- If customer shows high interest (buying readiness 70%+) → Provide thorough closing details and guide to booking
+- If customer just starting (buying readiness <40%) → Keep it engaging but concise (2-3 sentences)
+
+**SENTENCE COMPLETION - CRITICAL:**
+- ALWAYS complete every sentence
+- NEVER stop mid-sentence or mid-thought
+- End naturally with proper punctuation (. ! ?)
+- When your point is complete, stop naturally
+
+**CONVERSATION FLOW:**
+- Match the customer's engagement level
+- If they want details, provide them fully
+- If they're brief, keep pace but remain helpful
+- Let the conversation breathe naturally
+
+**SALES GUIDANCE:**
+- Buying Readiness 70%+ → Provide complete info and naturally ask: "Would you like to schedule a consultation?"
+- Buying Readiness 40-70% → Build value with 2-3 key benefits, generate interest
+- Buying Readiness <40% → Spark curiosity with 1-2 compelling points
+
+**BOOKING FLOW:**
+When customer is ready to book:
 1. Ask for preferred date
 2. Use check_slot_availability
 3. Ask for email
 4. Use verify_customer_email
 5. Use create_booking with confirmed details
 
-IMPORTANT:
-- Keep responses brief and conversational
-- Don't overwhelm with too much information
+**REMEMBER:**
+- This is a phone conversation - be natural and conversational
+- Respond completely to what they asked
+- Stop when your answer is complete
+- Trust your judgment on appropriate length based on their question
 """
             conversation_messages.insert(0, {
                 'role': 'system',

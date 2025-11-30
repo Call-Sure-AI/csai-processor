@@ -22,14 +22,14 @@ class RAGService:
             model=settings.openai_model or "gpt-4o-mini",
             temperature=0.3,
             openai_api_key=settings.openai_api_key,
-            max_tokens=80,
+            max_tokens=100,
             streaming=True
         )
 
         self.llm_with_functions = ChatOpenAI(
             model=settings.openai_model or "gpt-4o-mini",
             temperature=0.3,
-            max_tokens=80,
+            max_tokens=100,
             openai_api_key=settings.openai_api_key
         ).bind(functions=TICKET_FUNCTIONS)
         
@@ -59,7 +59,7 @@ class RAGService:
         role_description = additional_context.get('roleDescription', '')
         
         # Extract response settings
-        max_tokens = agent_config.get('max_response_tokens', 80)
+        max_tokens = agent_config.get('max_response_tokens', 100)
 
         buying_readiness = 0
         intent_type = "unknown"
