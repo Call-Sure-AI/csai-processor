@@ -745,6 +745,7 @@ async def process_and_respond_incoming(
     company_id: str,
     conversation_transcript: list,
     sentiment_analysis: dict,
+    intent_analysis: dict,
     urgent_acknowledgment: str = None,
     call_metadata: dict = None
 ):
@@ -754,9 +755,10 @@ async def process_and_respond_incoming(
     
     try:
         # Determine if we should use RAG
-        rag_decision = should_use_rag(transcript, conversation_transcript)
+        rag_decision = should_use_rag(transcript, conversation_transcript, intent_analysis)
         
         logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
+        logger.info(f"Buying Readiness: {intent_analysis.get('buying_readiness', 0)}%")
         
         # If direct response available, use it
         if not rag_decision['use_rag'] and rag_decision['direct_response']:
@@ -930,9 +932,10 @@ async def process_and_respond_outbound(
     
     try:
         # Determine if we should use RAG
-        rag_decision = should_use_rag(transcript, conversation_transcript)
+        rag_decision = should_use_rag(transcript, conversation_transcript, intent_analysis)
         
         logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
+        logger.info(f"Buying Readiness: {intent_analysis.get('buying_readiness', 0)}%")
         
         # If direct response available, use it
         if not rag_decision['use_rag'] and rag_decision['direct_response']:
