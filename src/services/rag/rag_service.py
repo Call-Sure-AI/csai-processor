@@ -66,6 +66,7 @@ class RAGService:
         sentiment = "neutral"
         objection_type = "none"
         
+        campaign_id = None
         if conversation_context and call_type == "outgoing":
             for msg in conversation_context:
                 if msg.get('role') == 'system':

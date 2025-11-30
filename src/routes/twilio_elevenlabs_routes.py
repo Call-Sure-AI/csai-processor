@@ -959,7 +959,7 @@ async def process_and_respond_outbound(
     try:
         # Determine if we should use RAG
         rag_decision = should_use_rag(transcript, conversation_transcript, intent_analysis)
-        
+        campaign_id = call_context.get(call_sid, {}).get('campaign_id', None)
         logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
         logger.info(f"Buying Readiness: {intent_analysis.get('buying_readiness', 0)}%")
         
@@ -1013,6 +1013,10 @@ Objection Type: {objection_type}
 Reasoning: {intent_analysis.get('reasoning')}
 Customer's Current Message: "{transcript}"
 
+[CALL METADATA]
+campaign_id: {campaign_id}
+call_sid: {call_sid}
+company_id: {company_id}
 [INTELLIGENT RESPONSE GUIDELINES]
 
 You are on a LIVE PHONE CALL. Adapt your response naturally based on what the customer is asking:
