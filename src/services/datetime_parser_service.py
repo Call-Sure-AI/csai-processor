@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import timedelta
 import pytz
 from dateutil import parser as date_parser
 import re

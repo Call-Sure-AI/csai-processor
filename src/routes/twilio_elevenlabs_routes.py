@@ -11,7 +11,7 @@ from services.rag_routing_service import rag_routing_service
 from services.datetime_parser_service import datetime_parser_service
 from services.booking_orchestration_service import booking_orchestrator, BookingState
 from twilio.twiml.voice_response import VoiceResponse, Connect
-from datetime import datetime, timedelta
+from datetime import timedelta
 from config.settings import settings
 from database.config import get_db
 import logging
@@ -933,6 +933,7 @@ async def process_and_respond_outbound(
     try:
         from services.datetime_parser_service import datetime_parser_service
         from services.booking_orchestration_service import booking_orchestrator, BookingState
+        from datetime import timedelta  # ✅ Only import timedelta, not datetime
         
         # Step 1: AI Routing Decision
         routing_decision = await rag_routing_service.should_retrieve_documents(
@@ -1014,18 +1015,10 @@ async def process_and_respond_outbound(
                 
                 logger.info(f"✓ Parsed: {datetime_info.get('user_friendly')}")
         
-        # 🔥 NEW: Filter functions based on call mode
+        # 🔥 Filter functions based on call mode
         if is_sales_call:
-            # SALES/BOOKING MODE - Only allow booking-related functions
-            allowed_function_names = [
-                'check_slot_availability',
-                'verify_customer_email', 
-                'create_booking'
-            ]
             logger.info(f"🎯 SALES MODE - Restricting to booking functions only")
         else:
-            # SUPPORT MODE - Allow all functions
-            allowed_function_names = None  # No filter
             logger.info(f"🎯 SUPPORT MODE - All functions available")
         
         # Build conversation context
@@ -1042,8 +1035,7 @@ async def process_and_respond_outbound(
         services = current_agent_context.get('additional_context', {}).get('businessContext', 'our services')
         
         # Get current date info for suggestions
-        from datetime import datetime, timedelta
-        now = datetime.now()
+        now = datetime.now()  # ✅ Uses datetime from top-level import
         tomorrow = now + timedelta(days=1)
         day_after = now + timedelta(days=2)
         
@@ -1163,16 +1155,9 @@ Remember: You are in SALES MODE. Focus on booking, not support."""
                     else:
                         llm_response = f"I'd love to schedule a demo for you. What date and time works best? I have availability tomorrow at 10 AM or 2 PM."
                 
-                # 🔥 ADDITIONAL CHECK - Validate function is allowed in current mode
-                elif allowed_function_names and function_name not in allowed_function_names:
-                    logger.warning(f"🚫 BLOCKED: Function '{function_name}' not allowed in SALES mode")
-                    logger.warning(f"   Allowed functions: {allowed_function_names}")
-                    
-                    llm_response = f"Let me help you schedule that demo. What date and time works best for you?"
-                
                 else:
                     # Function is allowed - proceed with execution
-                    logger.info(f"✅ Executing allowed function: {function_name}")
+                    logger.info(f"✅ Executing function: {function_name}")
                     
                     # Update booking state based on function
                     if function_name == 'check_slot_availability' and booking_session:
