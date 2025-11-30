@@ -659,25 +659,18 @@ async def handle_media_stream(websocket: WebSocket):
                         logger.info(f"Greeting sent")
                 
                 elif event == "media":
-                    if not is_agent_speaking:
-                        payload = data.get("media", {}).get("payload")
-                        if payload:
-                            audio = await deepgram_service.convert_twilio_audio(payload, session_id)
-                            if audio:
-                                await deepgram_service.process_audio_chunk(session_id, audio)
-                    else:
-                        payload = data.get("media", {}).get("payload")
-                        if payload:
-                            audio = await deepgram_service.convert_twilio_audio(payload, session_id)
-                            if audio:
-                                await deepgram_service.process_audio_chunk(session_id, audio)
+                    payload = data.get("media", {}).get("payload")
+                    if payload:
+                        audio = await deepgram_service.convert_twilio_audio(payload, session_id)
+                        if audio:
+                            await deepgram_service.process_audio_chunk(session_id, audio)
                 
                 elif event == "mark":
                     mark_name = data.get("mark", {}).get("name")
-                    logger.info(f"📍 Mark received: {mark_name}")
+                    logger.info(f"Mark received: {mark_name}")
 
                     if stop_audio_flag.get('waiting_for_mark') == mark_name:
-                        logger.info(f"✓ Audio playback complete: {mark_name}")
+                        logger.info(f"Audio playback complete: {mark_name}")
                         is_agent_speaking = False
                         stop_audio_flag.pop('waiting_for_mark', None)
                 
@@ -1504,18 +1497,11 @@ IMPORTANT DATE RULES:
                         logger.info(f"Greeting sent")
                 
                 elif event == "media":
-                    if not is_agent_speaking:
-                        payload = data.get("media", {}).get("payload")
-                        if payload:
-                            audio = await deepgram_service.convert_twilio_audio(payload, session_id)
-                            if audio:
-                                await deepgram_service.process_audio_chunk(session_id, audio)
-                    else:
-                        payload = data.get("media", {}).get("payload")
-                        if payload:
-                            audio = await deepgram_service.convert_twilio_audio(payload, session_id)
-                            if audio:
-                                await deepgram_service.process_audio_chunk(session_id, audio)
+                    payload = data.get("media", {}).get("payload")
+                    if payload:
+                        audio = await deepgram_service.convert_twilio_audio(payload, session_id)
+                        if audio:
+                            await deepgram_service.process_audio_chunk(session_id, audio)
                 
                 elif event == "mark":
                     mark_name = data.get("mark", {}).get("name")
@@ -1523,7 +1509,7 @@ IMPORTANT DATE RULES:
 
                     if mark_name in mark_received_event:
                         mark_received_event[mark_name].set()
-                        logger.info(f"✓ Signaled completion of: {mark_name}")
+                        logger.info(f"Signaled completion of: {mark_name}")
 
                 
                 elif event == "stop":
