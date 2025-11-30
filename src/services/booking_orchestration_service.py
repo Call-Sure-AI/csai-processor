@@ -1,9 +1,8 @@
 # src/services/booking_orchestration_service.py
 
-import logging
-from typing import Dict, Optional, List
-from datetime import datetime
 from enum import Enum
+from typing import Dict, Optional
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -13,17 +12,16 @@ class BookingState(Enum):
     COLLECTING_DATE = "collecting_date"
     COLLECTING_TIME = "collecting_time"
     CHECKING_AVAILABILITY = "checking_availability"
-    COLLECTING_EMAIL = "collecting_email"
+    COLLECTING_EMAIL = "collecting_email"  # ✅ EMAIL IS REQUIRED
     VERIFYING_EMAIL = "verifying_email"
     CONFIRMING_BOOKING = "confirming_booking"
     COMPLETED = "completed"
-    FAILED = "failed"
 
 class BookingOrchestrationService:
-    """State machine for managing booking flow"""
+    """Manages booking flow - asks for email (we have name+phone already)"""
     
     def __init__(self):
-        self.booking_sessions = {}  # call_sid -> booking_state
+        self.sessions: Dict[str, Dict] = {}
     
     def initialize_booking(
         self,
@@ -32,163 +30,154 @@ class BookingOrchestrationService:
         customer_phone: str,
         campaign_id: str
     ) -> Dict:
-        """Initialize a new booking session"""
+        """Initialize booking with pre-populated name and phone"""
         
         session = {
+            'call_sid': call_sid,
             'state': BookingState.INITIAL,
-            'customer_name': customer_name,
-            'customer_phone': customer_phone,
-            'campaign_id': campaign_id,
-            'collected_data': {
-                'date': None,
-                'time': None,
-                'datetime_iso': None,
-                'email': None,
-                'email_verified': False,
-                'slot_checked': False,
-                'slot_available': False
+            'customer_info': {
+                'name': customer_name,      # ✅ Already have from curl
+                'phone': customer_phone,    # ✅ Already have from curl
+                'email': None,              # ❌ NEED to ask for this
+                'campaign_id': campaign_id
             },
-            'history': [],
-            'created_at': datetime.utcnow().isoformat()
+            'collected_data': {
+                'date': None,               # ❌ NEED to ask
+                'time': None,               # ❌ NEED to ask
+                'datetime_iso': None,
+                'slot_available': False,
+                'email_verified': False
+            },
+            'history': []
         }
         
-        self.booking_sessions[call_sid] = session
-        logger.info(f"Booking session initialized for {call_sid}")
+        self.sessions[call_sid] = session
+        logger.info(f"🎫 Booking initialized for {customer_name} ({customer_phone})")
+        logger.info(f"   Need to collect: date, time, email")
         
         return session
     
     def get_session(self, call_sid: str) -> Optional[Dict]:
         """Get existing booking session"""
-        return self.booking_sessions.get(call_sid)
+        return self.sessions.get(call_sid)
     
-    def update_session_data(
-        self,
-        call_sid: str,
-        field: str,
-        value: any
-    ):
-        """Update a specific field in booking session"""
-        if call_sid in self.booking_sessions:
-            self.booking_sessions[call_sid]['collected_data'][field] = value
-            logger.info(f"Updated {field} = {value} for {call_sid}")
+    def update_session_data(self, call_sid: str, key: str, value: any):
+        """Update collected data"""
+        if call_sid in self.sessions:
+            if key == 'email':
+                # Store email in customer_info, not collected_data
+                self.sessions[call_sid]['customer_info']['email'] = value
+                logger.info(f"📧 Email: {value}")
+            else:
+                self.sessions[call_sid]['collected_data'][key] = value
+                logger.info(f"📝 {key} = {value}")
     
-    def transition_state(
-        self,
-        call_sid: str,
-        new_state: BookingState,
-        reason: str = None
-    ):
-        """Transition to new state"""
-        if call_sid in self.booking_sessions:
-            old_state = self.booking_sessions[call_sid]['state']
-            self.booking_sessions[call_sid]['state'] = new_state
-            self.booking_sessions[call_sid]['history'].append({
+    def transition_state(self, call_sid: str, new_state: BookingState, reason: str = ""):
+        """Move to next state"""
+        if call_sid in self.sessions:
+            old_state = self.sessions[call_sid]['state']
+            self.sessions[call_sid]['state'] = new_state
+            
+            self.sessions[call_sid]['history'].append({
                 'from': old_state.value,
                 'to': new_state.value,
-                'reason': reason,
-                'timestamp': datetime.utcnow().isoformat()
+                'reason': reason
             })
-            logger.info(f"State: {old_state.value} → {new_state.value} ({reason})")
+            
+            logger.info(f"🔄 {old_state.value} → {new_state.value} ({reason})")
     
     def get_next_action(self, call_sid: str) -> Dict:
-        """Determine what to ask/do next based on current state"""
+        """Determine what to ask for next"""
+        if call_sid not in self.sessions:
+            return {'action': 'initialize', 'prompt_hint': 'Start booking'}
         
-        session = self.get_session(call_sid)
-        if not session:
-            return {'action': 'error', 'message': 'No session found'}
-        
+        session = self.sessions[call_sid]
         state = session['state']
         collected = session['collected_data']
+        customer = session['customer_info']
         
-        # State machine logic
-        if state == BookingState.INITIAL:
+        # Priority order: date → time → check availability → email → confirm
+        
+        # 1. Need date?
+        if state in [BookingState.INITIAL, BookingState.COLLECTING_DATE]:
             if not collected['date']:
                 return {
-                    'action': 'ask',
-                    'field': 'date',
-                    'prompt_hint': 'Ask for preferred date'
+                    'action': 'collect_date',
+                    'prompt_hint': 'Ask: "What date works for you?"'
                 }
         
-        elif state == BookingState.COLLECTING_DATE:
-            if collected['date'] and not collected['time']:
+        # 2. Need time?
+        if state == BookingState.COLLECTING_TIME:
+            if not collected['time']:
                 return {
-                    'action': 'ask',
-                    'field': 'time',
-                    'prompt_hint': 'Ask for preferred time'
-                }
-            elif collected['date'] and collected['time']:
-                return {
-                    'action': 'function_call',
-                    'function': 'check_slot_availability',
-                    'prompt_hint': 'Check if slot is available'
+                    'action': 'collect_time',
+                    'prompt_hint': 'Ask: "What time would you prefer?"'
                 }
         
-        elif state == BookingState.CHECKING_AVAILABILITY:
-            if collected['slot_available'] and not collected['email']:
+        # 3. Check availability?
+        if state == BookingState.CHECKING_AVAILABILITY:
+            if collected['date'] and collected['time']:
                 return {
-                    'action': 'ask',
-                    'field': 'email',
-                    'prompt_hint': 'Ask for email address'
-                }
-            elif not collected['slot_available']:
-                return {
-                    'action': 'suggest_alternatives',
-                    'prompt_hint': 'Suggest alternative times'
+                    'action': 'check_slot',
+                    'prompt_hint': 'Call check_slot_availability function'
                 }
         
-        elif state == BookingState.COLLECTING_EMAIL:
-            if collected['email'] and not collected['email_verified']:
+        # 4. Need email? (only ask AFTER slot is confirmed available)
+        if state == BookingState.COLLECTING_EMAIL:
+            if not customer['email']:
                 return {
-                    'action': 'function_call',
-                    'function': 'verify_customer_email',
-                    'prompt_hint': 'Verify email by spelling it out'
+                    'action': 'collect_email',
+                    'prompt_hint': 'Ask: "What\'s your email address for the confirmation?"'
                 }
         
-        elif state == BookingState.VERIFYING_EMAIL:
-            if collected['email_verified']:
+        # 5. Verify email?
+        if state == BookingState.VERIFYING_EMAIL:
+            if customer['email'] and not collected['email_verified']:
                 return {
-                    'action': 'function_call',
-                    'function': 'create_booking',
-                    'prompt_hint': 'Create the booking now'
+                    'action': 'verify_email',
+                    'prompt_hint': 'Call verify_customer_email function'
                 }
         
-        elif state == BookingState.COMPLETED:
-            return {
-                'action': 'close',
-                'prompt_hint': 'Booking complete, ask if anything else needed'
-            }
+        # 6. Create booking?
+        if state == BookingState.CONFIRMING_BOOKING:
+            if collected['slot_available'] and customer['email']:
+                return {
+                    'action': 'create_booking',
+                    'prompt_hint': 'Call create_booking to finalize'
+                }
         
-        return {'action': 'unknown', 'prompt_hint': 'Continue conversation'}
+        return {'action': 'continue', 'prompt_hint': 'Keep conversation going'}
     
     def is_booking_active(self, call_sid: str) -> bool:
-        """Check if there's an active booking session"""
-        session = self.get_session(call_sid)
-        if not session:
+        """Check if booking in progress"""
+        if call_sid not in self.sessions:
             return False
-        
-        return session['state'] not in [BookingState.COMPLETED, BookingState.FAILED]
+        return self.sessions[call_sid]['state'] != BookingState.COMPLETED
     
     def can_create_booking(self, call_sid: str) -> bool:
-        """Check if all required info is collected"""
-        session = self.get_session(call_sid)
-        if not session:
+        """Check if we have everything needed to create booking"""
+        if call_sid not in self.sessions:
             return False
         
+        session = self.sessions[call_sid]
         collected = session['collected_data']
+        customer = session['customer_info']
         
+        # Need: name (have), phone (have), email (ask), date (ask), time (ask)
         return all([
-            collected['date'],
-            collected['time'],
-            collected['email'],
-            collected['email_verified'],
-            collected['slot_available']
+            customer['name'],           # ✅ Have from curl
+            customer['phone'],          # ✅ Have from curl
+            customer['email'],          # ❌ Must collect
+            collected['date'],          # ❌ Must collect
+            collected['time'],          # ❌ Must collect
+            collected['slot_available'] # ✅ System checks
         ])
     
     def clear_session(self, call_sid: str):
-        """Clear booking session"""
-        if call_sid in self.booking_sessions:
-            del self.booking_sessions[call_sid]
-            logger.info(f"Cleared booking session for {call_sid}")
+        """Remove booking session"""
+        if call_sid in self.sessions:
+            del self.sessions[call_sid]
+            logger.info(f"🗑️ Cleared: {call_sid}")
 
 # Global instance
 booking_orchestrator = BookingOrchestrationService()

@@ -922,10 +922,9 @@ async def process_and_respond_outbound(
     call_type: str
 ):
     """
-    Process outbound call with intelligent orchestration
-    - Filters functions based on call mode (sales vs support)
-    - Prevents ticket creation during sales calls
-    - Manages booking flow with state machine
+    CORRECT FLOW:
+    - We HAVE: name, phone (from curl)
+    - We NEED: date, time, email
     """
     
     rag = get_rag_service()
@@ -933,278 +932,213 @@ async def process_and_respond_outbound(
     try:
         from services.datetime_parser_service import datetime_parser_service
         from services.booking_orchestration_service import booking_orchestrator, BookingState
-        from datetime import timedelta  # ✅ Only import timedelta, not datetime
+        from datetime import timedelta
         
-        # Step 1: AI Routing Decision
-        routing_decision = await rag_routing_service.should_retrieve_documents(
-            user_message=transcript,
-            conversation_history=conversation_transcript,
-            call_type=call_type,
-            agent_context=current_agent_context
-        )
-        
-        logger.info(f"🎯 Strategy: {routing_decision['response_strategy']}")
-        logger.info(f"   Buying Readiness: {intent_analysis.get('buying_readiness')}%")
-        
-        # Get metadata
+        # Get call metadata
         call_metadata = call_context.get(call_sid, {})
         campaign_id = call_metadata.get('campaign_id')
         customer_name = call_metadata.get('customer_name', 'Customer')
         customer_phone = call_metadata.get('to_number')
         
-        # Check if booking session is active
+        # Check booking session
         booking_session = booking_orchestrator.get_session(call_sid)
         is_booking_mode = booking_session and booking_orchestrator.is_booking_active(call_sid)
         
-        # Detect if customer wants to book
+        # Detect booking intent
         buying_readiness = intent_analysis.get('buying_readiness', 0)
         intent_type = intent_analysis.get('intent_type')
         
         should_start_booking = (
             buying_readiness >= 70 or
             intent_type == 'strong_buying' or
-            any(word in transcript.lower() for word in ['book', 'schedule', 'appointment', 'yes book'])
+            any(word in transcript.lower() for word in ['book', 'schedule', 'appointment', 'yes', 'sure'])
         )
         
-        # Initialize booking if customer shows strong interest
+        # Initialize booking (name + phone already known)
         if should_start_booking and not booking_session:
             booking_session = booking_orchestrator.initialize_booking(
                 call_sid=call_sid,
-                customer_name=customer_name,
-                customer_phone=customer_phone,
+                customer_name=customer_name,    # ✅ From curl
+                customer_phone=customer_phone,  # ✅ From curl
                 campaign_id=campaign_id
             )
             is_booking_mode = True
-            booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_DATE, "Customer expressed interest")
-            logger.info(f"🎫 Booking session initialized for {customer_name}")
+            booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_DATE, "Customer interested")
+            logger.info(f"🎫 Booking started for {customer_name}")
         
-        # Determine if this is a SALES call (booking intent or high readiness)
         is_sales_call = is_booking_mode or buying_readiness >= 50
         
-        # Parse date/time if mentioned - UPDATED WITH MORE KEYWORDS
-        datetime_info = None
-        datetime_keywords = [
-            'now', 'immediately', 'right now', 'asap', 'as soon as possible',  # Immediate
-            'tomorrow', 'today', 'tonight',  # Relative days
-            'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',  # Days
-            'january', 'february', 'march', 'april', 'may', 'june',  # Months
-            'july', 'august', 'september', 'october', 'november', 'december',
-            'am', 'pm', ':', 'o\'clock', 'oclock',  # Time indicators
-            'morning', 'afternoon', 'evening', 'night',  # Time of day
-            'next week', 'this week', 'next month'  # Relative periods
-        ]
+        # AI-powered datetime parsing
+        datetime_info = await datetime_parser_service.parse_user_datetime(
+            user_input=transcript,
+            user_timezone=call_metadata.get('user_timezone', 'UTC'),
+            business_hours={'start': '09:00', 'end': '18:00'}
+        )
         
-        if any(word in transcript.lower() for word in datetime_keywords):
-            logger.info(f"🕐 Datetime keyword detected in: '{transcript}'")
+        # Update booking session if datetime found
+        if datetime_info.get('parsed_successfully') and booking_session:
+            logger.info(f"✓ AI extracted: {datetime_info.get('user_friendly')}")
+            logger.info(f"  Reasoning: {datetime_info.get('ai_reasoning')}")
             
-            datetime_info = await datetime_parser_service.parse_user_datetime(
-                user_input=transcript,
-                user_timezone=call_metadata.get('user_timezone', 'UTC'),
-                business_hours={'start': '09:00', 'end': '18:00'}  # TODO: Get from campaign config
-            )
-            
-            if datetime_info.get('parsed_successfully') and booking_session:
-                if datetime_info.get('date'):
-                    booking_orchestrator.update_session_data(call_sid, 'date', datetime_info['date'])
-                    logger.info(f"✓ Captured date: {datetime_info['date']}")
-                if datetime_info.get('time'):
-                    booking_orchestrator.update_session_data(call_sid, 'time', datetime_info['time'])
-                    logger.info(f"✓ Captured time: {datetime_info['time']}")
-                if datetime_info.get('datetime_iso'):
-                    booking_orchestrator.update_session_data(call_sid, 'datetime_iso', datetime_info['datetime_iso'])
-                
-                logger.info(f"✓ Parsed: {datetime_info.get('user_friendly')}")
+            if datetime_info.get('date'):
+                booking_orchestrator.update_session_data(call_sid, 'date', datetime_info['date'])
+            if datetime_info.get('time'):
+                booking_orchestrator.update_session_data(call_sid, 'time', datetime_info['time'])
+            if datetime_info.get('datetime_iso'):
+                booking_orchestrator.update_session_data(call_sid, 'datetime_iso', datetime_info['datetime_iso'])
         
-        # 🔥 Filter functions based on call mode
-        if is_sales_call:
-            logger.info(f"🎯 SALES MODE - Restricting to booking functions only")
-        else:
-            logger.info(f"🎯 SUPPORT MODE - All functions available")
+        # Check if transcript contains an email
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        import re
+        email_match = re.search(email_pattern, transcript)
+        if email_match and booking_session:
+            email = email_match.group(0)
+            booking_orchestrator.update_session_data(call_sid, 'email', email)
+            logger.info(f"📧 Extracted email: {email}")
         
-        # Build conversation context
+        # Build minimal conversation context
         conversation_messages = []
-        for msg in conversation_transcript[-10:]:
+        for msg in conversation_transcript[-6:]:
             if msg['role'] in ['user', 'assistant']:
                 conversation_messages.append({
                     'role': msg['role'],
                     'content': msg['content']
                 })
         
-        # Choose prompt based on mode
+        # Get context
         company_name = current_agent_context.get('name', 'our company')
-        services = current_agent_context.get('additional_context', {}).get('businessContext', 'our services')
         
-        # Get current date info for suggestions
-        now = datetime.now()  # ✅ Uses datetime from top-level import
+        now = datetime.now()
         tomorrow = now + timedelta(days=1)
         day_after = now + timedelta(days=2)
         
+        # Choose prompt
         if is_sales_call:
-            # BOOKING MODE: Minimal prompt with datetime guidance
-            next_action = booking_orchestrator.get_next_action(call_sid) if booking_session else {'prompt_hint': 'Ask for their preferred date and time'}
-            collected = booking_session['collected_data'] if booking_session else {'date': None, 'time': None, 'email': None}
+            # BOOKING MODE
+            next_action = booking_orchestrator.get_next_action(call_sid) if booking_session else {'prompt_hint': 'Ask for date/time'}
+            collected = booking_session['collected_data'] if booking_session else {}
+            customer = booking_session['customer_info'] if booking_session else {}
             
-            prompt = f"""You are helping {customer_name} book an appointment for {company_name}.
+            has_date = collected.get('date') is not None
+            has_time = collected.get('time') is not None
+            has_email = customer.get('email') is not None
+            
+            prompt = f"""Booking demo for {customer_name}.
 
-**Current Status:**
-- Name: {customer_name} ✓
-- Phone: {customer_phone} ✓
-- Date: {collected.get('date') or 'NEEDED'}
-- Time: {collected.get('time') or 'NEEDED'}
-- Email: {collected.get('email') or 'NEEDED'}
+**We have:**
+- Name: ✅ {customer_name}
+- Phone: ✅ {customer_phone}
+- Date: {'✅ ' + collected.get('date') if has_date else '❌ NEED'}
+- Time: {'✅ ' + collected.get('time') if has_time else '❌ NEED'}
+- Email: {'✅ ' + customer.get('email') if has_email else '❌ NEED'}
+
+**Today:** {now.strftime('%A, %B %d')}
 
 **Next step:** {next_action['prompt_hint']}
 
-**🚨 CRITICAL RULES - MUST FOLLOW:**
-1. This is an OUTBOUND SALES CALL - your ONLY job is to book a demo
-2. NEVER create support tickets during sales calls
-3. DO NOT use create_ticket function - it's not available to you
-4. If customer is confused, CLARIFY the dates and continue booking
-5. Available functions: check_slot_availability, verify_customer_email, create_booking ONLY
+**CRITICAL RULES:**
+1. We already have name and phone - DO NOT ask for them
+2. We NEED to collect: date, time, and email
+3. Flow: date → time → check availability → email → confirm
+4. NO support tickets in sales calls
+5. Max 1 sentence responses
 
-**Today's Date:** {now.strftime('%A, %B %d, %Y')}
+**If date+time collected but no email:**
+Say: "Perfect! What's your email for the confirmation?"
 
-**If customer says "now" or "immediately":**
-The system has interpreted this. Confirm: "I can schedule you for {datetime_info.get('user_friendly') if datetime_info else 'tomorrow at 10:00 AM'}. Does that work for you?"
+**Suggest times:**
+- "Tomorrow at 10 AM?"
+- "{tomorrow.strftime('%B %d')} at 2 PM?"
 
-**If customer is vague about timing:**
-Suggest specific times:
-- "Would tomorrow ({tomorrow.strftime('%B %d')}) at 10 AM work for you?"
-- "I have availability tomorrow at 10 AM or 2 PM. Which works better?"
-- "How about {day_after.strftime('%A, %B %d')} at 10 AM?"
+**After email collected:**
+Use verify_customer_email function, then create_booking
 
-**If customer is confused about dates:**
-Clarify: "Let me clarify - today is {now.strftime('%A, %B %d, %Y')}. When would be a good time for your demo?"
-
-**Response Guidelines:**
-- Keep responses brief (1-2 sentences max)
-- Stay focused on booking the appointment
-- Be natural and conversational
-- Don't apologize excessively
-
-Remember: You are in SALES MODE. Focus on booking, not support."""
+Be brief. Book it."""
 
         else:
-            # SALES MODE (not yet booking): Minimal prompt, focus on conversation
-            prompt = f"""You are a sales representative for {company_name}.
+            # SALES MODE
+            prompt = f"""Sales for {company_name}.
 
-**Customer:** {customer_name}
-**Services:** {services}
-**Interest Level:** {buying_readiness}%
+Customer: {customer_name}
+Interest: {buying_readiness}%
 
-**Your approach based on interest:**
-- If interest 70%+: Suggest booking naturally ("Would you like to schedule a demo?")
-- If interest 40-70%: Highlight key benefits that match their needs
-- If interest <40%: Ask questions to understand their needs better
+**Approach:**
+- 70%+: "Want to book a demo?"
+- 40-70%: Share 1 benefit
+- <40%: Ask 1 question
 
-**Today's Date:** {now.strftime('%A, %B %d, %Y')}
-
-**🚨 CRITICAL:** This is a SALES call. Do NOT create support tickets. Focus on moving toward a booking.
-
-**Response Guidelines:**
-- Be conversational and natural
-- Keep responses to 2-3 sentences
-- Listen actively to their concerns
-- Guide conversation toward booking when appropriate"""
+1 sentence max.
+NO tickets."""
         
-        conversation_messages.insert(0, {
-            'role': 'system',
-            'content': prompt
-        })
+        conversation_messages.insert(0, {'role': 'system', 'content': prompt})
         
-        # Execute based on routing strategy
-        if routing_decision['response_strategy'] == 'document_retrieval':
-            logger.info("📚 Using RAG")
-            
-            response_chunks = []
-            async for chunk in rag.get_answer(
-                company_id=company_id,
-                question=transcript,
-                agent_id=current_agent_id,
-                call_sid=call_sid,
-                conversation_context=conversation_messages,
-                call_type=call_type
-            ):
-                response_chunks.append(chunk)
-            
-            llm_response = "".join(response_chunks)
+        # Single API call
+        logger.info("💬 LLM call")
         
-        else:
-            logger.info("💬 Using conversation context")
+        response = await rag.llm_with_functions.ainvoke(conversation_messages)
+        
+        # Handle function calls
+        if hasattr(response, 'additional_kwargs') and 'function_call' in response.additional_kwargs:
+            function_call = response.additional_kwargs['function_call']
+            function_name = function_call['name']
+            arguments = json.loads(function_call['arguments'])
             
-            # Call LLM with function calling
-            response = await rag.llm_with_functions.ainvoke(conversation_messages)
+            logger.info(f"📞 Function: {function_name}")
             
-            # Handle function calls
-            if hasattr(response, 'additional_kwargs') and 'function_call' in response.additional_kwargs:
-                function_call = response.additional_kwargs['function_call']
-                function_name = function_call['name']
-                arguments = json.loads(function_call['arguments'])
-                
-                logger.info(f"📞 Function called: {function_name}")
-                
-                # 🔥 CRITICAL SAFETY CHECK - Block ticket creation during sales calls
-                if function_name == 'create_ticket' and is_sales_call:
-                    logger.warning(f"🚫 BLOCKED: Attempted to create ticket during SALES call")
-                    logger.warning(f"   Call SID: {call_sid}, Customer: {customer_name}")
-                    logger.warning(f"   Buying Readiness: {buying_readiness}%, Booking Mode: {is_booking_mode}")
-                    
-                    # Override with booking-focused response
-                    if datetime_info and datetime_info.get('parsed_successfully'):
-                        llm_response = f"Perfect! Let me check if {datetime_info.get('user_friendly')} is available for your demo."
-                    else:
-                        llm_response = f"I'd love to schedule a demo for you. What date and time works best? I have availability tomorrow at 10 AM or 2 PM."
-                
-                else:
-                    # Function is allowed - proceed with execution
-                    logger.info(f"✅ Executing function: {function_name}")
-                    
-                    # Update booking state based on function
-                    if function_name == 'check_slot_availability' and booking_session:
-                        booking_orchestrator.transition_state(call_sid, BookingState.CHECKING_AVAILABILITY, "Checking slot")
-                    
-                    from services.agent_tools import execute_function
-                    llm_response = await execute_function(
-                        function_name=function_name,
-                        arguments=arguments,
-                        company_id=company_id,
-                        call_sid=call_sid,
-                        campaign_id=campaign_id,
-                        user_timezone=call_metadata.get('user_timezone', 'UTC'),
-                        business_hours={'start': '09:00', 'end': '18:00'}
-                    )
-                    
-                    # Update state after function execution
-                    if function_name == 'check_slot_availability':
-                        if 'available' in llm_response.lower():
-                            booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
-                            booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_EMAIL, "Slot available")
-                        else:
-                            logger.info("Slot not available - staying in collecting state")
-                    
-                    elif function_name == 'verify_customer_email':
-                        booking_orchestrator.update_session_data(call_sid, 'email_verified', True)
-                        booking_orchestrator.transition_state(call_sid, BookingState.VERIFYING_EMAIL, "Email verified")
-                    
-                    elif function_name == 'create_booking':
-                        booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking created")
-                        logger.info(f"✅ Booking completed for {customer_name}")
+            # Block ticket creation during sales
+            if function_name == 'create_ticket' and is_sales_call:
+                logger.warning(f"🚫 BLOCKED: create_ticket during sales")
+                llm_response = "Let me book that demo. What date works?"
             
             else:
-                # No function call - direct response
-                llm_response = response.content
+                # Execute function
+                logger.info(f"✅ Executing: {function_name}")
+                
+                # Update state before execution
+                if function_name == 'check_slot_availability' and booking_session:
+                    booking_orchestrator.transition_state(call_sid, BookingState.CHECKING_AVAILABILITY, "Checking")
+                
+                from services.agent_tools import execute_function
+                llm_response = await execute_function(
+                    function_name=function_name,
+                    arguments=arguments,
+                    company_id=company_id,
+                    call_sid=call_sid,
+                    campaign_id=campaign_id,
+                    user_timezone=call_metadata.get('user_timezone', 'UTC'),
+                    business_hours={'start': '09:00', 'end': '18:00'}
+                )
+                
+                # Update state after execution
+                if function_name == 'check_slot_availability':
+                    if 'available' in llm_response.lower():
+                        booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
+                        # ✅ After slot confirmed, ask for email
+                        booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_EMAIL, "Slot available, need email")
+                    else:
+                        logger.info("Slot unavailable, staying in collecting state")
+                
+                elif function_name == 'verify_customer_email':
+                    booking_orchestrator.update_session_data(call_sid, 'email_verified', True)
+                    booking_orchestrator.transition_state(call_sid, BookingState.CONFIRMING_BOOKING, "Email verified")
+                
+                elif function_name == 'create_booking':
+                    booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking complete!")
+                    logger.info(f"✅ BOOKING COMPLETE: {customer_name}")
+        
+        else:
+            # No function call - direct response
+            llm_response = response.content
         
         # Save to transcript
         conversation_transcript.append({
             'role': 'assistant',
             'content': llm_response,
             'timestamp': datetime.utcnow().isoformat(),
-            'strategy': routing_decision['response_strategy'],
-            'booking_mode': is_booking_mode,
-            'sales_call': is_sales_call
+            'booking_mode': is_booking_mode
         })
         
-        logger.info(f"AGENT: '{llm_response[:100]}{'...' if len(llm_response) > 100 else ''}'")
+        logger.info(f"AGENT: {llm_response[:80]}{'...' if len(llm_response) > 80 else ''}")
         
         # Save to DB
         db.add(ConversationTurn(
@@ -1215,17 +1149,17 @@ Remember: You are in SALES MODE. Focus on booking, not support."""
         ))
         db.commit()
         
-        # Stream response
+        # Stream to customer
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, llm_response, stop_audio_flag
         )
         
     except Exception as e:
-        logger.error(f"❌ Error in process_and_respond_outbound: {e}")
+        logger.error(f"❌ Error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         
-        error_msg = "I apologize for the confusion. Could you please repeat that?"
+        error_msg = "Could you repeat that?"
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, error_msg, stop_audio_flag
         )
