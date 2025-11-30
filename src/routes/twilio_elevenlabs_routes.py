@@ -1,3 +1,4 @@
+# src\routes\twilio_elevenlabs_routes.py
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -6,6 +7,9 @@ from database.models import CallType, ConversationTurn
 from services.speech.deepgram_ws_service import DeepgramWebSocketService
 from services.voice.elevenlabs_service import elevenlabs_service
 from services.rag.rag_service import get_rag_service
+from services.rag_routing_service import rag_routing_service
+from services.datetime_parser_service import datetime_parser_service
+from services.booking_orchestration_service import booking_orchestrator, BookingState
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from datetime import datetime, timedelta
 from config.settings import settings
@@ -647,91 +651,6 @@ async def stream_elevenlabs_audio_with_playback(websocket: WebSocket, stream_sid
     except Exception as e:
         logger.error(f"Error streaming audio: {e}")
 
-def should_use_rag(transcript: str, conversation_history: list, intent_analysis: dict = None) -> dict:
-    transcript_lower = transcript.lower().strip()
-    words = transcript_lower.split()
-    word_count = len(words)
-    
-    buying_readiness = 0
-    if intent_analysis:
-        buying_readiness = intent_analysis.get('buying_readiness', 0)
-    
-    is_active_conversation = buying_readiness > 40
-    
-    incomplete_indicators = ['then', 'so', 'but', 'and', 'or', 'because', 'well', 'um', 'uh']
-    last_word = words[-1] if words else ''
-    if last_word in incomplete_indicators and word_count <= 3:
-        return {
-            'use_rag': True,
-            'direct_response': None,
-            'reason': 'incomplete_sentence'
-        }
-
-    simple_acknowledgments = [
-        'ok', 'okay', 'thanks', 'thank you', 'alright', 'sure', 
-        'yes', 'no', 'yeah', 'yep', 'nope', 'got it', 'understood',
-        'i see', 'makes sense', 'cool', 'great', 'perfect', 'fine'
-    ]
-
-    if word_count <= 2 and transcript_lower in simple_acknowledgments:
-        if is_active_conversation:
-            return {
-                'use_rag': True,
-                'direct_response': None,
-                'reason': 'active_conversation_acknowledgment'
-            }
-        else:
-            responses = [
-                "Is there anything else I can help you with?",
-                "What else can I assist you with today?",
-                "Do you have any other questions?"
-            ]
-            import random
-            return {
-                'use_rag': False,
-                'direct_response': random.choice(responses),
-                'reason': 'simple_acknowledgment'
-            }
-
-    if transcript_lower in ['thanks', 'thank you', 'thanks bye', 'thank you bye']:
-        return {
-            'use_rag': False,
-            'direct_response': "You're welcome! Have a great day!",
-            'reason': 'gratitude_farewell'
-        }
-
-    booking_keywords = ['book', 'schedule', 'appointment', 'slot', 'available', 'reserve', 'confirm booking']
-    if any(keyword in transcript_lower for keyword in booking_keywords):
-        info_keywords = ['when', 'what time', 'how', 'can i', 'do you', 'is it possible']
-        if any(kw in transcript_lower for kw in info_keywords):
-            return {'use_rag': True, 'direct_response': None, 'reason': 'booking_inquiry'}
-        else:
-            return {
-                'use_rag': False,
-                'direct_response': None,
-                'reason': 'booking_action'
-            }
-
-    greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
-    if any(greeting in transcript_lower for greeting in greetings) and word_count <= 4:
-        if len(conversation_history) > 2:
-            return {'use_rag': True, 'direct_response': None, 'reason': 'mid_conversation'}
-        return {
-            'use_rag': False,
-            'direct_response': "Hello! How can I assist you today?",
-            'reason': 'greeting'
-        }
-
-    farewells = ['bye', 'goodbye', 'see you', 'talk later', 'have a good', 'that\'s all', 'i\'m done', 'all done']
-    if any(farewell in transcript_lower for farewell in farewells):
-        return {
-            'use_rag': False,
-            'direct_response': "Thank you for calling. Have a great day!",
-            'reason': 'farewell'
-        }
-
-    return {'use_rag': True, 'direct_response': None, 'reason': 'complex_query'}
-
 
 async def process_and_respond_incoming(
     transcript: str,
@@ -748,39 +667,23 @@ async def process_and_respond_incoming(
     urgent_acknowledgment: str = None,
     call_metadata: dict = None
 ):
-    """Process incoming call and respond - fully cancellable"""
+    """Process incoming call with AI-powered intelligent routing"""
     
     rag = get_rag_service()
     
     try:
-        # Determine if we should use RAG
-        rag_decision = should_use_rag(transcript, conversation_transcript, None)
+        # AI-POWERED DECISION: Should we retrieve documents?
+        routing_decision = await rag_routing_service.should_retrieve_documents(
+            user_message=transcript,
+            conversation_history=conversation_transcript,
+            call_type="incoming",
+            agent_context=current_agent_context
+        )
         
-        logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
+        response_strategy = routing_decision['response_strategy']
         
-        # If direct response available, use it
-        if not rag_decision['use_rag'] and rag_decision['direct_response']:
-            logger.info(f"Using direct response: '{rag_decision['direct_response']}'")
-            
-            conversation_transcript.append({
-                'role': 'assistant',
-                'content': rag_decision['direct_response'],
-                'timestamp': datetime.utcnow().isoformat(),
-                'rag_used': False
-            })
-            
-            db.add(ConversationTurn(
-                call_sid=call_sid,
-                role="assistant",
-                content=rag_decision['direct_response'],
-                created_at=datetime.utcnow()
-            ))
-            db.commit()
-            
-            await stream_elevenlabs_audio_with_playback(
-                websocket, stream_sid, rag_decision['direct_response'], stop_audio_flag
-            )
-            return
+        logger.info(f"🎯 AI Routing: {response_strategy}")
+        logger.info(f"   Reasoning: {routing_decision['reasoning']}")
         
         # Build conversation context
         conversation_messages = []
@@ -791,102 +694,194 @@ async def process_and_respond_incoming(
                     'content': msg['content']
                 })
         
-        # Single intelligent prompt for incoming support
-        support_context = f"""[INCOMING SUPPORT CALL]
+        # Strategy 1: Direct canned response (no API calls)
+        if response_strategy == 'direct_canned':
+            logger.info(f"✅ Using canned response (0 API calls)")
+            
+            # Use a simple LLM call to generate natural response
+            simple_prompt = [
+                {"role": "system", "content": f"You are a helpful assistant. Respond naturally to this greeting/farewell in 1 sentence."},
+                {"role": "user", "content": transcript}
+            ]
+            
+            response_chunks = []
+            async for chunk in rag.llm.astream(simple_prompt):
+                if chunk.content:
+                    response_chunks.append(chunk.content)
+            
+            llm_response = "".join(response_chunks)
+            
+            conversation_transcript.append({
+                'role': 'assistant',
+                'content': llm_response,
+                'timestamp': datetime.utcnow().isoformat(),
+                'strategy': 'direct_canned',
+                'documents_retrieved': False
+            })
+            
+            db.add(ConversationTurn(
+                call_sid=call_sid,
+                role="assistant",
+                content=llm_response,
+                created_at=datetime.utcnow()
+            ))
+            db.commit()
+            
+            await stream_elevenlabs_audio_with_playback(
+                websocket, stream_sid, llm_response, stop_audio_flag
+            )
+            return
+        
+        # Strategy 2: Use conversation context only (LLM without document retrieval)
+        elif response_strategy == 'conversation_context':
+            logger.info(f"💬 Using conversation context only (1 LLM call, no vector search)")
+            
+            support_context = f"""[INCOMING SUPPORT CALL - ACTIVE CONVERSATION]
 Customer's Sentiment: {sentiment_analysis.get('sentiment', 'neutral')}
-Urgency Level: {sentiment_analysis.get('urgency', 'normal')}
+Urgency: {sentiment_analysis.get('urgency', 'normal')}
 Customer's Current Message: "{transcript}"
 
-[INTELLIGENT RESPONSE GUIDELINES]
+You are continuing an active conversation. Use the conversation history to respond naturally.
 
-You are on a LIVE SUPPORT PHONE CALL. Adapt your response naturally based on what the customer needs:
-
-**RESPONSE LENGTH - Adapt Based on Customer Request:**
-- If customer says "tell me more", "explain", "how do I" → Give DETAILED step-by-step help (4-6 complete sentences)
-- If customer asks a specific question → Answer COMPLETELY in 2-4 sentences
-- If customer's question is complex (long message) → Provide thorough assistance
-- If customer gives simple acknowledgment ("okay", "got it") → Brief confirmation (1-2 sentences)
-- If customer is frustrated or urgent → Be direct and solution-focused immediately
-
-**SENTENCE COMPLETION - CRITICAL:**
-- ALWAYS complete every sentence
-- NEVER stop mid-sentence or mid-thought
-- End naturally with proper punctuation (. ! ?)
-- When your solution is complete, stop naturally
-
-**SUPPORT BEST PRACTICES:**
-- Match the customer's urgency and tone
-- If they need detailed help, provide it fully
-- If issue is simple, keep it brief but helpful
-- Use create_ticket function for issues requiring follow-up
-- Always be solution-focused and clear
+**GUIDELINES:**
+- Reference what was already discussed
+- Keep responses natural and conversational (2-4 sentences typical)
+- If customer asks about something truly NEW that you don't know, say: "Let me look that up in our documentation"
+- Use create_ticket function if they report an issue
+- Adapt response length based on what customer asks for
 
 **IMPORTANT:**
-- DO NOT use booking functions
-- If customer wants to schedule, create a ticket instead
-- This is a phone conversation - be conversational and empathetic
-- Respond completely to what they asked
-- Trust your judgment on appropriate response length
-"""
-        
-        conversation_messages.insert(0, {
-            'role': 'system',
-            'content': support_context
-        })
-        
-        if sentiment_analysis['urgency'] == 'high':
+- This is a PHONE conversation
+- You can see the conversation history below
+- Don't repeat information already provided
+- Be helpful and empathetic"""
+            
             conversation_messages.insert(0, {
                 'role': 'system',
-                'content': f"""[URGENT REQUEST DETECTED]
-Keywords: {', '.join(sentiment_analysis['urgency_keywords'])}
-Priority: HIGH
-
-Instructions:
-1. Try to find solution in documentation
-2. If no immediate solution, create support ticket with high priority
-3. Inform customer about ticket ID and next steps
-"""
+                'content': support_context
+            })
+            
+            # Direct LLM with function calling (no RAG)
+            response = await rag.llm_with_functions.ainvoke(conversation_messages)
+            
+            # Check for function call
+            if hasattr(response, 'additional_kwargs') and 'function_call' in response.additional_kwargs:
+                function_call = response.additional_kwargs['function_call']
+                function_name = function_call['name']
+                arguments = json.loads(function_call['arguments'])
+                
+                logger.info(f"Function call: {function_name}")
+                
+                from services.agent_tools import execute_function
+                llm_response = await execute_function(
+                    function_name=function_name,
+                    arguments=arguments,
+                    company_id=company_id,
+                    call_sid=call_sid or "unknown",
+                    campaign_id=None,
+                user_timezone=call_metadata.get('user_timezone', 'UTC'),  # NEW
+                business_hours={'start': '09:00', 'end': '18:00'}
+                )
+            else:
+                llm_response = response.content
+            
+            conversation_transcript.append({
+                'role': 'assistant',
+                'content': llm_response,
+                'timestamp': datetime.utcnow().isoformat(),
+                'strategy': 'conversation_context',
+                'documents_retrieved': False
             })
         
-        # Get RAG response - OpenAI decides everything
-        response_chunks = []
-        async for chunk in rag.get_answer(
-            company_id=company_id,
-            question=transcript,
-            agent_id=current_agent_id,
-            call_sid=call_sid,
-            conversation_context=conversation_messages,
-            call_type="incoming"
-        ):
-            response_chunks.append(chunk)
-        
-        llm_response = "".join(response_chunks)
-        
-        # Handle urgent ticket creation if needed
-        if sentiment_analysis['urgency'] == 'high' and len(llm_response) < 50:
-            logger.warning(f"No RAG solution for urgent request - creating ticket")
-            ticket_result = await execute_function(
-                function_name="create_ticket",
-                arguments={
-                    "title": f"Urgent: {transcript[:50]}",
-                    "description": f"High urgency request: {transcript}\n\nKeywords: {', '.join(sentiment_analysis['urgency_keywords'])}",
-                    "customer_phone": call_metadata.get('from_number'),
-                    "priority": "high"
-                },
+        # Strategy 3: Full RAG with document retrieval
+        elif response_strategy == 'document_retrieval':
+            logger.info(f"📚 Using FULL RAG (document retrieval + LLM)")
+            
+            support_context = f"""[INCOMING SUPPORT CALL]
+Customer's Sentiment: {sentiment_analysis.get('sentiment', 'neutral')}
+Urgency: {sentiment_analysis.get('urgency', 'normal')}
+Customer's Current Message: "{transcript}"
+
+You are on a LIVE SUPPORT PHONE CALL. Use the provided documentation to give accurate answers.
+
+**RESPONSE GUIDELINES:**
+- If customer asks for details, provide them completely
+- If customer says "tell me more", expand with specifics
+- Match the customer's urgency and tone
+- Use create_ticket function for issues requiring follow-up
+- Be solution-focused and clear
+
+**IMPORTANT:**
+- Use the documentation provided to answer accurately
+- If documentation doesn't cover it, be honest
+- This is a phone conversation - be conversational"""
+            
+            conversation_messages.insert(0, {
+                'role': 'system',
+                'content': support_context
+            })
+            
+            if sentiment_analysis['urgency'] == 'high':
+                conversation_messages.insert(0, {
+                    'role': 'system',
+                    'content': f"""[URGENT REQUEST]
+Keywords: {', '.join(sentiment_analysis.get('urgency_keywords', []))}
+Priority: HIGH - Address immediately"""
+                })
+            
+            # Full RAG pipeline
+            response_chunks = []
+            async for chunk in rag.get_answer(
                 company_id=company_id,
-                call_sid=call_sid
-            )
-            llm_response = f"{llm_response} {ticket_result}"
+                question=transcript,
+                agent_id=current_agent_id,
+                call_sid=call_sid,
+                conversation_context=conversation_messages,
+                call_type="incoming"
+            ):
+                response_chunks.append(chunk)
+            
+            llm_response = "".join(response_chunks)
+            
+            # Handle urgent fallback if needed
+            if sentiment_analysis['urgency'] == 'high' and len(llm_response) < 50:
+                logger.warning(f"No RAG solution for urgent request - creating ticket")
+                from services.agent_tools import execute_function
+                ticket_result = await execute_function(
+                    function_name="create_ticket",
+                    arguments={
+                        "title": f"Urgent: {transcript[:50]}",
+                        "description": f"High urgency: {transcript}",
+                        "customer_phone": call_metadata.get('from_number'),
+                        "priority": "high"
+                    },
+                    company_id=company_id,
+                    call_sid=call_sid
+                )
+                llm_response = f"{llm_response} {ticket_result}"
+            
+            conversation_transcript.append({
+                'role': 'assistant',
+                'content': llm_response,
+                'timestamp': datetime.utcnow().isoformat(),
+                'strategy': 'document_retrieval',
+                'documents_retrieved': True
+            })
         
-        # Save to transcript
-        conversation_transcript.append({
-            'role': 'assistant',
-            'content': llm_response,
-            'timestamp': datetime.utcnow().isoformat(),
-            'rag_used': True
-        })
+        else:
+            # Fallback
+            logger.warning(f"Unknown strategy: {response_strategy}, using conversation context")
+            llm_response = "I'm here to help. Could you tell me more about what you need?"
+            
+            conversation_transcript.append({
+                'role': 'assistant',
+                'content': llm_response,
+                'timestamp': datetime.utcnow().isoformat(),
+                'strategy': 'fallback',
+                'documents_retrieved': False
+            })
         
-        logger.info(f"AGENT ({current_agent_id}): '{llm_response[:100]}...'")
+        logger.info(f"AGENT: '{llm_response[:100]}...'")
         
         # Save to DB
         db.add(ConversationTurn(
@@ -897,44 +892,20 @@ Instructions:
         ))
         db.commit()
         
-        # Stream LLM response
+        # Stream response
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, llm_response, stop_audio_flag
         )
         
     except Exception as e:
-        logger.error(f"RAG error: {e}")
+        logger.error(f"Error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         
-        if sentiment_analysis.get('urgency') == 'high':
-            logger.error(f"RAG failed for urgent request - creating ticket as fallback")
-            try:
-                ticket_result = await execute_function(
-                    function_name="create_ticket",
-                    arguments={
-                        "title": f"Urgent: {transcript[:50]}",
-                        "description": f"High urgency request (RAG failed): {transcript}",
-                        "customer_phone": call_metadata.get('from_number'),
-                        "priority": "critical"
-                    },
-                    company_id=company_id,
-                    call_sid=call_sid
-                )
-                await stream_elevenlabs_audio_with_playback(
-                    websocket, stream_sid, ticket_result, stop_audio_flag
-                )
-            except Exception as ticket_error:
-                logger.error(f"Ticket creation failed: {ticket_error}")
-                error_msg = "I'm prioritizing your request and connecting you with a supervisor immediately."
-                await stream_elevenlabs_audio_with_playback(
-                    websocket, stream_sid, error_msg, stop_audio_flag
-                )
-        else:
-            error_msg = "I'm having trouble. Could you please repeat?"
-            await stream_elevenlabs_audio_with_playback(
-                websocket, stream_sid, error_msg, stop_audio_flag
-            )
+        error_msg = "I'm having trouble. Could you please repeat?"
+        await stream_elevenlabs_audio_with_playback(
+            websocket, stream_sid, error_msg, stop_audio_flag
+        )
 
 async def process_and_respond_outbound(
     transcript: str,
@@ -950,51 +921,76 @@ async def process_and_respond_outbound(
     intent_analysis: dict,
     call_type: str
 ):
-    """Process outbound call and respond - fully cancellable"""
+    """Process outbound call with intelligent orchestration"""
     
     rag = get_rag_service()
     
     try:
-        rag_decision = should_use_rag(transcript, conversation_transcript, intent_analysis)
+        from services.datetime_parser_service import datetime_parser_service
+        from services.booking_orchestration_service import booking_orchestrator, BookingState
         
-        logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
-        logger.info(f"Buying Readiness: {intent_analysis.get('buying_readiness', 0)}%")
-
-        if not rag_decision['use_rag'] and rag_decision['direct_response']:
-            logger.info(f"Using direct response: '{rag_decision['direct_response']}'")
-            
-            conversation_transcript.append({
-                'role': 'assistant',
-                'content': rag_decision['direct_response'],
-                'timestamp': datetime.utcnow().isoformat(),
-                'rag_used': False
-            })
-            
-            db.add(ConversationTurn(
-                call_sid=call_sid,
-                role="assistant",
-                content=rag_decision['direct_response'],
-                created_at=datetime.utcnow()
-            ))
-            db.commit()
-            
-            await stream_elevenlabs_audio_with_playback(
-                websocket, stream_sid, rag_decision['direct_response'], stop_audio_flag
-            )
-            return
-
+        # Step 1: AI Routing Decision
+        routing_decision = await rag_routing_service.should_retrieve_documents(
+            user_message=transcript,
+            conversation_history=conversation_transcript,
+            call_type=call_type,
+            agent_context=current_agent_context
+        )
+        
+        logger.info(f"🎯 Strategy: {routing_decision['response_strategy']}")
+        logger.info(f"   Buying Readiness: {intent_analysis.get('buying_readiness')}%")
+        
+        # Get metadata
         call_metadata = call_context.get(call_sid, {})
-        campaign_id = call_metadata.get('campaign_id', None)
+        campaign_id = call_metadata.get('campaign_id')
         customer_name = call_metadata.get('customer_name', 'Customer')
-        customer_phone = call_metadata.get('to_number', None)
-            
-        current_date = datetime.now()
-        current_year = current_date.year
-        tomorrow_date = (current_date + timedelta(days=1)).strftime('%Y-%m-%d')
-        tomorrow_display = (current_date + timedelta(days=1)).strftime('%B %d, %Y')
+        customer_phone = call_metadata.get('to_number')
         
-        logger.info(f"Call Metadata - Campaign: {campaign_id}, Customer: {customer_name}, Phone: {customer_phone}")
-
+        # Check if booking session is active
+        booking_session = booking_orchestrator.get_session(call_sid)
+        is_booking_mode = booking_session and booking_orchestrator.is_booking_active(call_sid)
+        
+        # Detect if customer wants to book
+        buying_readiness = intent_analysis.get('buying_readiness', 0)
+        intent_type = intent_analysis.get('intent_type')
+        
+        should_start_booking = (
+            buying_readiness >= 70 or
+            intent_type == 'strong_buying' or
+            any(word in transcript.lower() for word in ['book', 'schedule', 'appointment', 'yes book'])
+        )
+        
+        # Initialize booking if customer shows strong interest
+        if should_start_booking and not booking_session:
+            booking_session = booking_orchestrator.initialize_booking(
+                call_sid=call_sid,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                campaign_id=campaign_id
+            )
+            is_booking_mode = True
+            booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_DATE, "Customer expressed interest")
+        
+        # Parse date/time if mentioned
+        datetime_info = None
+        if any(word in transcript.lower() for word in ['tomorrow', 'today', 'monday', 'tuesday', 'december', 'am', 'pm', ':', 'o\'clock']):
+            datetime_info = await datetime_parser_service.parse_user_datetime(
+                user_input=transcript,
+                user_timezone=call_metadata.get('user_timezone', 'UTC'),
+                business_hours={'start': '09:00', 'end': '18:00'}  # TODO: Get from campaign config
+            )
+            
+            if datetime_info['parsed_successfully'] and booking_session:
+                if datetime_info.get('date'):
+                    booking_orchestrator.update_session_data(call_sid, 'date', datetime_info['date'])
+                if datetime_info.get('time'):
+                    booking_orchestrator.update_session_data(call_sid, 'time', datetime_info['time'])
+                if datetime_info.get('datetime_iso'):
+                    booking_orchestrator.update_session_data(call_sid, 'datetime_iso', datetime_info['datetime_iso'])
+                
+                logger.info(f"✓ Parsed: {datetime_info.get('user_friendly')}")
+        
+        # Build conversation context
         conversation_messages = []
         for msg in conversation_transcript[-10:]:
             if msg['role'] in ['user', 'assistant']:
@@ -1003,245 +999,121 @@ async def process_and_respond_outbound(
                     'content': msg['content']
                 })
         
-        buying_readiness = intent_analysis.get('buying_readiness', 0)
-        objection_type = intent_analysis.get('objection_type', 'none')
-        intent_type = intent_analysis.get('intent_type')
-
+        # Choose prompt based on mode
         company_name = current_agent_context.get('name', 'our company')
-        services_offered = current_agent_context.get('additional_context', {}).get('businessContext', 'our services')
+        services = current_agent_context.get('additional_context', {}).get('businessContext', 'our services')
+        
+        if is_booking_mode:
+            # BOOKING MODE: Minimal prompt, orchestrator handles logic
+            next_action = booking_orchestrator.get_next_action(call_sid)
+            collected = booking_session['collected_data']
+            
+            prompt = f"""You are helping {customer_name} book an appointment for {company_name}.
 
-        persuasion_context = f"""[AI INTENT ANALYSIS]
-Customer Intent: {intent_type}
-Sentiment: {intent_analysis.get('sentiment')}
-Buying Readiness: {buying_readiness}%
-Objection Type: {objection_type}
-Reasoning: {intent_analysis.get('reasoning')}
-Customer's Current Message: "{transcript}"
+**What we have:**
+- Name: {customer_name} ✓
+- Phone: {customer_phone} ✓
+- Date: {collected['date'] or 'NEEDED'}
+- Time: {collected['time'] or 'NEEDED'}
+- Email: {collected['email'] or 'NEEDED'}
 
-[CALL METADATA - USE FOR BOOKING]
-campaign_id: {campaign_id}
-customer_name: {customer_name}
-customer_phone: {customer_phone}
+**Next step:** {next_action['prompt_hint']}
 
-[CURRENT DATE & TIME CONTEXT]
-Today's Date: {current_date.strftime('%Y-%m-%d')} ({current_date.strftime('%A, %B %d, %Y')})
-Current Year: {current_year}
-Tomorrow's Date: {tomorrow_date} ({tomorrow_display})
-Business Hours: 9:00 AM to 6:00 PM (slots every 30 minutes)
+**Functions available:** check_slot_availability, verify_customer_email, create_booking
 
-[YOUR ROLE AND SCOPE]
-You are a sales representative for {company_name}.
-Your services: {services_offered}
+Be natural and helpful. Keep responses brief (1-2 sentences)."""
 
-**GUARDRAILS - STAY ON TOPIC:**
-✅ You CAN discuss:
-- {company_name}'s services and offerings
-- Benefits, pricing, features of our services
-- Booking appointments or consultations
-- Answering questions about what we offer
-- Addressing concerns or objections about our services
+        else:
+            # SALES MODE: Minimal prompt, focus on conversation
+            prompt = f"""You are a sales representative for {company_name}.
 
-❌ You CANNOT discuss:
-- Competitor companies or their services
-- Unrelated topics (weather, news, sports, politics, etc.)
-- Technical support for other products
-- Personal advice outside your service scope
-- Topics unrelated to {company_name}
+Customer: {customer_name}
+Services: {services}
+Interest Level: {buying_readiness}%
 
-**HANDLING OUT-OF-SCOPE QUERIES:**
-If customer asks about something outside your scope:
-1. Politely acknowledge: "That's an interesting question, but..."
-2. Redirect: "However, I'm here to help you with [our services]. Can I tell you about..."
-3. Keep it brief (1-2 sentences) and redirect back
+**Your approach:**
+- If interest 70%+: Suggest booking naturally
+- If interest 40-70%: Highlight benefits
+- If interest <40%: Create curiosity
 
-[INTELLIGENT RESPONSE GUIDELINES]
-
-You are on a LIVE PHONE CALL. Adapt your response naturally based on what the customer is asking:
-
-**RESPONSE LENGTH - Adapt Based on Customer Signals:**
-- If customer says "tell me more", "continue", "explain", "I want to know more" → Give DETAILED response (4-6 complete sentences with specifics)
-- If customer asks a specific question → Answer COMPLETELY in 2-4 sentences
-- If customer gives simple acknowledgment ("okay", "yes", "I see") → Brief 1-2 sentence follow-up or next point
-- If customer shows high interest (buying readiness 70%+) → Provide thorough closing details and guide to booking
-- If customer just starting (buying readiness <40%) → Keep it engaging but concise (2-3 sentences)
-
-**SENTENCE COMPLETION - CRITICAL:**
-- ALWAYS complete every sentence
-- NEVER stop mid-sentence or mid-thought
-- End naturally with proper punctuation (. ! ?)
-- When your point is complete, stop naturally
-
-**SALES GUIDANCE:**
-- Buying Readiness 70%+ → Provide complete info and naturally ask: "Would you like to schedule a consultation?"
-- Buying Readiness 40-70% → Build value with 2-3 key benefits, generate interest
-- Buying Readiness <40% → Spark curiosity with 1-2 compelling points
-
-[DATE PARSING RULES - CRITICAL]
-
-When customer mentions a date, ALWAYS parse it correctly:
-
-**YEAR HANDLING:**
-- Current Year is: {current_year}
-- If customer says "1st December" or "December 1st" → Parse as {current_year}-12-01
-- If customer says "tomorrow" → Parse as {tomorrow_date}
-- If customer says "next Monday" → Calculate date in {current_year}
-- NEVER use past years (2022, 2023, 2024)
-- ALWAYS assume {current_year} unless customer explicitly says a different year
-
-**DATE FORMAT:**
-- ALWAYS use format: YYYY-MM-DD
-- Example: "1st December" = "{current_year}-12-01"
-- Example: "December 15" = "{current_year}-12-15"
-- Example: "tomorrow" = "{tomorrow_date}"
-
-**MONTH CONVERSIONS:**
-- January = 01, February = 02, March = 03, April = 04
-- May = 05, June = 06, July = 07, August = 08
-- September = 09, October = 10, November = 11, December = 12
-
-**EXAMPLES:**
-Customer: "Book on 1st December"
-Correct: preferred_date="{current_year}-12-01" ✅
-Wrong: preferred_date="2022-12-01" ❌
-
-Customer: "December 25th"
-Correct: preferred_date="{current_year}-12-25" ✅
-
-Customer: "tomorrow"
-Correct: preferred_date="{tomorrow_date}" ✅
-
-[SIMPLIFIED BOOKING FLOW - WITH AVAILABILITY CHECKING]
-
-**CRITICAL - CUSTOMER INFO IS ALREADY AVAILABLE:**
-✅ Customer Name: {customer_name}
-✅ Customer Phone: {customer_phone}
-✅ Campaign ID: {campaign_id}
-
-**DO NOT ASK THE CUSTOMER FOR:**
-❌ Their name (you already know it's {customer_name})
-❌ Their phone number (you already have it)
-
-**ONLY ASK FOR:**
-✅ Preferred date and time
-✅ Email address (only after confirming slot availability)
-
-**BOOKING CONVERSATION FLOW:**
-
-Step 1: Customer agrees to book
-Customer: "Yes, I'd like to book an appointment"
-You: "Perfect! What date and time works best for you? We have availability starting from {tomorrow_display}."
-
-Step 2: Customer provides date/time
-Customer: "Book on 1st December" or "December 1st at 10 AM"
-
-**PARSE THE DATE CORRECTLY:**
-- Extract date: If they say "1st December", parse as "{current_year}-12-01"
-- Extract time: If they say "10 AM", use "10:00 AM"
-- If no time given, ask: "What time works for you? We have slots from 9 AM to 6 PM."
-
-Step 3: Check availability using the function
-You: [Use check_slot_availability with:
-  - customer_phone: "{customer_phone}"
-  - preferred_date: "{current_year}-12-01" (correctly parsed with current year)
-  - preferred_time: "10:00 AM"
-  - campaign_id: "{campaign_id}"
-]
-
-Step 4a: If slot is AVAILABLE
-Function returns: "Great news! {current_year}-12-01 at 10:00 AM is available. To proceed, I'll need your email address..."
-You: Simply relay this and ask for email
-
-Step 4b: If slot is NOT AVAILABLE
-Function returns: "I'm sorry, but {current_year}-12-01 at 10:00 AM is fully booked. Would you like me to suggest alternative times?"
-You: Offer alternative slots by checking nearby times:
-- Try checking the same date at different times (11 AM, 2 PM, 3 PM)
-- Or try the next day at the same time
-- Use check_slot_availability for each alternative
-
-Example:
-You: "I'm sorry, but December 1st at 10 AM is fully booked. Let me check some alternatives for you."
-[Check {current_year}-12-01 at 11:00 AM]
-[Check {current_year}-12-01 at 2:00 PM]
-[Check {current_year}-12-02 at 10:00 AM]
-You: "I have availability on December 1st at 11 AM or 2 PM, or December 2nd at 10 AM. Which works better for you?"
-
-Step 5: Ask for email after confirming availability
-You: "Great! That time is available. I just need your email address to send the confirmation."
-
-Step 6: Verify email
-Customer: "john@example.com"
-You: [Use verify_customer_email with customer_email="john@example.com"]
-You: "Let me confirm - that's j-o-h-n at example dot com, correct?"
-
-Step 7: Create booking with ALL pre-filled information
-Customer: "Yes, that's correct"
-You: [Use create_booking with:
-  - customer_name: "{customer_name}" (ALWAYS use this value)
-  - customer_phone: "{customer_phone}" (ALWAYS use this value)
-  - preferred_date: "{current_year}-12-01" (correctly parsed date)
-  - preferred_time: "10:00 AM"
-  - customer_email: "john@example.com" (from customer)
-]
-
-**CRITICAL INSTRUCTIONS:**
-1. ALWAYS parse dates with current year: {current_year}
-2. ALWAYS check availability BEFORE asking for email
-3. If slot unavailable, suggest 2-3 alternatives
-4. NEVER ask for name or phone - they're pre-filled
-5. Use check_slot_availability for EVERY date/time before confirming
-
-**EXAMPLE - CORRECT BOOKING WITH AVAILABILITY:**
-Customer: "Book on December 1st at 10 AM"
-You: [check_slot_availability(
-  customer_phone="{customer_phone}",
-  preferred_date="{current_year}-12-01",
-  preferred_time="10:00 AM",
-  campaign_id="{campaign_id}"
-)]
-
-If Available:
-You: "Excellent! December 1st at 10 AM is available. I just need your email address for the confirmation."
-
-If Not Available:
-You: [Check alternatives: {current_year}-12-01 at 11:00 AM, 2:00 PM, etc.]
-You: "December 1st at 10 AM is booked, but I have 11 AM or 2 PM available on the same day. Which works better?"
-
-**REMEMBER:**
-- Current year is {current_year} - NEVER use 2022, 2023, or 2024
-- Always check availability before collecting email
-- Suggest alternatives if requested slot is unavailable
-- Only ask for EMAIL - name and phone are pre-filled
-"""
+Be conversational and natural (2-3 sentences max)."""
         
         conversation_messages.insert(0, {
             'role': 'system',
-            'content': persuasion_context
+            'content': prompt
         })
         
-        # Get RAG response - OpenAI decides everything
-        response_chunks = []
-        async for chunk in rag.get_answer(
-            company_id=company_id,
-            question=transcript,
-            agent_id=current_agent_id,
-            call_sid=call_sid,
-            conversation_context=conversation_messages,
-            call_type=call_type
-        ):
-            response_chunks.append(chunk)
+        # Execute based on routing strategy
+        if routing_decision['response_strategy'] == 'document_retrieval':
+            logger.info("📚 Using RAG")
+            
+            response_chunks = []
+            async for chunk in rag.get_answer(
+                company_id=company_id,
+                question=transcript,
+                agent_id=current_agent_id,
+                call_sid=call_sid,
+                conversation_context=conversation_messages,
+                call_type=call_type
+            ):
+                response_chunks.append(chunk)
+            
+            llm_response = "".join(response_chunks)
         
-        llm_response = "".join(response_chunks)
+        else:
+            logger.info("💬 Using conversation context")
+            
+            response = await rag.llm_with_functions.ainvoke(conversation_messages)
+            
+            # Handle function calls
+            if hasattr(response, 'additional_kwargs') and 'function_call' in response.additional_kwargs:
+                function_call = response.additional_kwargs['function_call']
+                function_name = function_call['name']
+                arguments = json.loads(function_call['arguments'])
+                
+                logger.info(f"📞 Function: {function_name}")
+                
+                # Update booking state based on function
+                if function_name == 'check_slot_availability' and booking_session:
+                    booking_orchestrator.transition_state(call_sid, BookingState.CHECKING_AVAILABILITY, "Checking slot")
+                
+                from services.agent_tools import execute_function
+                llm_response = await execute_function(
+                    function_name=function_name,
+                    arguments=arguments,
+                    company_id=company_id,
+                    call_sid=call_sid,
+                    campaign_id=campaign_id,
+                user_timezone=call_metadata.get('user_timezone', 'UTC'),  # NEW
+                business_hours={'start': '09:00', 'end': '18:00'}
+                )
+                
+                # Update state after function execution
+                if function_name == 'check_slot_availability':
+                    if 'available' in llm_response.lower():
+                        booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
+                        booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_EMAIL, "Slot available")
+                
+                elif function_name == 'verify_customer_email':
+                    booking_orchestrator.update_session_data(call_sid, 'email_verified', True)
+                    booking_orchestrator.transition_state(call_sid, BookingState.VERIFYING_EMAIL, "Email verified")
+                
+                elif function_name == 'create_booking':
+                    booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking created")
+            
+            else:
+                llm_response = response.content
         
         # Save to transcript
         conversation_transcript.append({
             'role': 'assistant',
             'content': llm_response,
             'timestamp': datetime.utcnow().isoformat(),
-            'intent_handled': intent_type,
-            'rag_used': True
+            'strategy': routing_decision['response_strategy'],
+            'booking_mode': is_booking_mode
         })
         
-        logger.info(f"AGENT ({current_agent_id}): '{llm_response[:100]}...'")
+        logger.info(f"AGENT: '{llm_response[:100]}...'")
         
         # Save to DB
         db.add(ConversationTurn(
@@ -1252,13 +1124,13 @@ You: "December 1st at 10 AM is booked, but I have 11 AM or 2 PM available on the
         ))
         db.commit()
         
-        # Stream LLM response
+        # Stream response
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, llm_response, stop_audio_flag
         )
         
     except Exception as e:
-        logger.error(f"RAG error: {e}")
+        logger.error(f"Error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         

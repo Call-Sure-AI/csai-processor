@@ -1,6 +1,8 @@
+# src/services/agent_tools.py
 from typing import Dict, Any, List
 from services.ticket_service import ticket_service
 from services.booking_service import booking_service
+from services.datetime_parser_service import datetime_parser_service
 from datetime import datetime, timedelta
 import logging
 
@@ -95,76 +97,14 @@ TICKET_FUNCTIONS = [
     }
 ]
 
-def parse_time_slot(preferred_time: str, date_str: str) -> tuple:
-    """Parse time slot from natural language with proper date handling"""
-    try:
-        today = datetime.now().date()
-
-        try:
-            date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        except:
-            try:
-                date = datetime.strptime(date_str, "%d-%m-%Y").date()
-            except:
-                logger.warning(f"Invalid date format: {date_str}, using tomorrow")
-                date = today + timedelta(days=1)
-
-        if date < today:
-            logger.warning(f"Date {date_str} is in the past, using tomorrow instead")
-            date = today + timedelta(days=1)
-
-        max_future_date = today + timedelta(days=90)
-        if date > max_future_date:
-            logger.warning(f"Date {date_str} is too far in future, using tomorrow")
-            date = today + timedelta(days=1)
-        
-        # Parse time
-        time_str = preferred_time.upper().replace(" ", "")
-        
-        if "AM" in time_str or "PM" in time_str:
-            time_parts = time_str.replace("AM", "").replace("PM", "").split(":")
-            hour = int(time_parts[0])
-            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
-            
-            if "PM" in time_str and hour != 12:
-                hour += 12
-            elif "AM" in time_str and hour == 12:
-                hour = 0
-        else:
-            time_parts = preferred_time.split(":")
-            hour = int(time_parts[0])
-            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
-
-        if hour < 9 or hour >= 18:
-            logger.warning(f"Time {preferred_time} is outside business hours, using 10 AM")
-            hour = 10
-            minute = 0
-        
-        # Create datetime
-        slot_start = datetime.combine(date, datetime.min.time()).replace(hour=hour, minute=minute, second=0, microsecond=0)
-        slot_end = slot_start + timedelta(minutes=30)
-        
-        logger.info(f"Parsed slot: {slot_start.isoformat()} to {slot_end.isoformat()}")
-        
-        return slot_start.isoformat(), slot_end.isoformat()
-        
-    except Exception as e:
-        logger.error(f"Error parsing time slot: {str(e)}")
-
-        tomorrow = datetime.now() + timedelta(days=1)
-        slot_start = tomorrow.replace(hour=10, minute=0, second=0, microsecond=0)
-        slot_end = slot_start + timedelta(minutes=30)
-        
-        logger.info(f"Using fallback: {slot_start.isoformat()}")
-        
-        return slot_start.isoformat(), slot_end.isoformat()
-
 async def execute_function(
     function_name: str,
     arguments: Dict[str, Any],
     company_id: str,
     call_sid: str,
-    campaign_id: str = None
+    campaign_id: str = None,
+    user_timezone: str = "UTC",
+    business_hours: Dict = None
 ) -> str:
     """Execute agent function and return response"""
     try:
@@ -197,8 +137,30 @@ async def execute_function(
             preferred_time = arguments.get("preferred_time")
             campaign_id_arg = arguments.get("campaign_id", campaign_id)
             
-            # Parse time slot
-            slot_start, slot_end = parse_time_slot(preferred_time, preferred_date)
+            # USE NEW PARSER - Much more intelligent
+            date_time_str = f"{preferred_date} {preferred_time}"
+            parsed = await datetime_parser_service.parse_user_datetime(
+                user_input=date_time_str,
+                user_timezone=user_timezone,
+                business_hours=business_hours or {'start': '09:00', 'end': '18:00'}
+            )
+            
+            if not parsed['parsed_successfully']:
+                return f"I'm having trouble understanding that date and time. Could you say it again? For example, 'tomorrow at 2pm' or 'December 1st at 10am'."
+            
+            # Check if within business hours
+            if not parsed.get('within_business_hours', True):
+                return (
+                    f"I'm sorry, but {parsed.get('user_friendly', preferred_time)} is outside our business hours "
+                    f"({business_hours.get('start', '9am')} to {business_hours.get('end', '6pm')}). "
+                    f"Would you like to book during business hours instead?"
+                )
+            
+            # Extract ISO format for API
+            slot_start = parsed['datetime_iso']
+            # Calculate end time (30 min later)
+            start_dt = datetime.fromisoformat(slot_start.replace('Z', '+00:00'))
+            slot_end = (start_dt + timedelta(minutes=30)).isoformat()
             
             # Check availability
             availability = await booking_service.check_slot_availability(
@@ -210,7 +172,7 @@ async def execute_function(
             
             if availability['available']:
                 return (
-                    f"Great news! {preferred_date} at {preferred_time} is available. "
+                    f"Great news! {parsed.get('user_friendly', preferred_date + ' at ' + preferred_time)} is available. "
                     f"To proceed, I'll need your email address for the confirmation. "
                     f"What's your email?"
                 )
@@ -218,13 +180,13 @@ async def execute_function(
                 if availability['customer_already_booked']:
                     existing = availability['existing_booking']
                     return (
-                        f"I see you already have a booking on {preferred_date} at {preferred_time}. "
+                        f"I see you already have a booking on {parsed.get('user_friendly')}. "
                         f"Your booking ID is {existing.get('id')}. "
                         f"Would you like to choose a different time?"
                     )
                 else:
                     return (
-                        f"I'm sorry, but {preferred_date} at {preferred_time} is fully booked. "
+                        f"I'm sorry, but {parsed.get('user_friendly')} is fully booked. "
                         f"Would you like me to suggest alternative times?"
                     )
         
@@ -247,7 +209,20 @@ async def execute_function(
             customer_email = arguments.get("customer_email")
             notes = arguments.get("notes", "")
             
-            slot_start, slot_end = parse_time_slot(preferred_time, preferred_date)
+            # USE NEW PARSER for booking creation too
+            date_time_str = f"{preferred_date} {preferred_time}"
+            parsed = await datetime_parser_service.parse_user_datetime(
+                user_input=date_time_str,
+                user_timezone=user_timezone,
+                business_hours=business_hours or {'start': '09:00', 'end': '18:00'}
+            )
+            
+            if not parsed['parsed_successfully']:
+                return "I'm having trouble with that date and time. Let's try booking again."
+            
+            slot_start = parsed['datetime_iso']
+            start_dt = datetime.fromisoformat(slot_start.replace('Z', '+00:00'))
+            slot_end = (start_dt + timedelta(minutes=30)).isoformat()
             
             result = await booking_service.create_booking(
                 campaign_id=campaign_id,
@@ -262,7 +237,7 @@ async def execute_function(
             if result.get("success"):
                 booking_id = result.get("booking_id")
                 logger.info(f"Booking created: {booking_id}")
-                return f"Excellent choice, {customer_name}! I've scheduled your appointment for {preferred_date} at {preferred_time}. Your booking ID is {booking_id}. You'll receive a confirmation email shortly. Is there anything else I can help you with?"
+                return f"Excellent choice, {customer_name}! I've scheduled your appointment for {parsed.get('user_friendly')}. Your booking ID is {booking_id}. You'll receive a confirmation email shortly. Is there anything else I can help you with?"
             else:
                 error = result.get("error", "Unknown error")
                 logger.error(f"Booking failed: {error}")
@@ -290,4 +265,6 @@ async def execute_function(
             
     except Exception as e:
         logger.error(f"Function execution error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return "I encountered an error processing your request. Let me connect you with support."
