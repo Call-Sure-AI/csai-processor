@@ -647,6 +647,59 @@ async def stream_elevenlabs_audio_with_playback(websocket: WebSocket, stream_sid
     except Exception as e:
         logger.error(f"Error streaming audio: {e}")
 
+def should_use_rag(transcript: str, conversation_history: list) -> dict:
+    transcript_lower = transcript.lower().strip()
+
+    simple_acknowledgments = [
+        'ok', 'okay', 'thanks', 'thank you', 'alright', 'sure', 
+        'yes', 'no', 'yeah', 'yep', 'nope', 'got it', 'understood',
+        'i see', 'makes sense', 'cool', 'great', 'perfect', 'fine'
+    ]
+
+    words = transcript_lower.split()
+    if len(words) <= 3 and any(ack in transcript_lower for ack in simple_acknowledgments):
+        responses = [
+            "Is there anything else I can help you with?",
+            "What else can I assist you with today?",
+            "Do you have any other questions?",
+            "Anything else I can help with?"
+        ]
+        import random
+        return {
+            'use_rag': False,
+            'direct_response': random.choice(responses),
+            'reason': 'simple_acknowledgment'
+        }
+    
+    booking_keywords = ['book', 'schedule', 'appointment', 'slot', 'available', 'reserve', 'confirm booking']
+    if any(keyword in transcript_lower for keyword in booking_keywords):
+        info_keywords = ['when', 'what time', 'how', 'can i', 'do you', 'is it possible']
+        if any(kw in transcript_lower for kw in info_keywords):
+            return {'use_rag': True, 'direct_response': None, 'reason': 'booking_inquiry'}
+        else:
+            return {
+                'use_rag': False,
+                'direct_response': None,
+                'reason': 'booking_action'
+            }
+
+    greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
+    if any(greeting in transcript_lower for greeting in greetings) and len(words) <= 4:
+        return {
+            'use_rag': False,
+            'direct_response': "Hello! How can I assist you today?",
+            'reason': 'greeting'
+        }
+
+    farewells = ['bye', 'goodbye', 'see you', 'talk later', 'have a good', 'thanks for', 'that\'s all']
+    if any(farewell in transcript_lower for farewell in farewells):
+        return {
+            'use_rag': False,
+            'direct_response': "Thank you for calling. Have a great day!",
+            'reason': 'farewell'
+        }
+
+    return {'use_rag': True, 'direct_response': None, 'reason': 'complex_query'}
 
 async def process_and_respond_incoming(
     transcript: str,
@@ -668,24 +721,43 @@ async def process_and_respond_incoming(
     rag = get_rag_service()
     
     try:
-        # Generate acknowledgment
-        if urgent_acknowledgment:
-            acknowledgment = "Let me check what we can do to help you with this immediately."
-        else:
-            acknowledgment = prompt_template_service.generate_rag_acknowledgment(
-                transcript,
-                current_agent_context
+        # Determine if we should use RAG
+        rag_decision = should_use_rag(transcript, conversation_transcript)
+        
+        logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
+        
+        # If direct response available, use it
+        if not rag_decision['use_rag'] and rag_decision['direct_response']:
+            logger.info(f"Using direct response: '{rag_decision['direct_response']}'")
+            
+            # Save to transcript
+            conversation_transcript.append({
+                'role': 'assistant',
+                'content': rag_decision['direct_response'],
+                'timestamp': datetime.utcnow().isoformat(),
+                'rag_used': False
+            })
+            
+            # Save to DB
+            db.add(ConversationTurn(
+                call_sid=call_sid,
+                role="assistant",
+                content=rag_decision['direct_response'],
+                created_at=datetime.utcnow()
+            ))
+            db.commit()
+            
+            # Stream response directly
+            await stream_elevenlabs_audio_with_playback(
+                websocket, stream_sid, rag_decision['direct_response'], stop_audio_flag
             )
+            return
         
-        logger.info(f"Acknowledgment: '{acknowledgment}'")
+        # If booking action, function calls will handle (no acknowledgment needed)
+        if rag_decision['reason'] == 'booking_action':
+            logger.info("Booking action detected - skipping acknowledgment, function will handle")
         
-        await stream_elevenlabs_audio_with_playback(
-            websocket, stream_sid, acknowledgment, stop_audio_flag
-        )
-        
-        await asyncio.sleep(0.3)
-        
-        # Build conversation context
+        # Build conversation context for RAG
         conversation_messages = []
         for msg in conversation_transcript[-10:]:
             if msg['role'] in ['user', 'assistant']:
@@ -699,7 +771,9 @@ async def process_and_respond_incoming(
             'content': """[INCOMING SUPPORT CALL]
 - Use create_ticket function for issues, problems, or requests
 - DO NOT use any booking functions
-- If customer wants to schedule, create a ticket instead"""
+- If customer wants to schedule, create a ticket instead
+- Keep responses concise and under 100 words
+- Be direct and helpful"""
         })
         
         if sentiment_analysis['urgency'] == 'high':
@@ -714,7 +788,7 @@ Instructions:
 3. Inform customer about ticket ID"""
             })
         
-        # Get RAG response
+        # Get RAG response with token limit
         response_chunks = []
         async for chunk in rag.get_answer(
             company_id=company_id,
@@ -744,13 +818,12 @@ Instructions:
             )
             llm_response = f"{llm_response} {ticket_result}"
         
-        full_response = f"{urgent_acknowledgment} {acknowledgment} {llm_response}" if urgent_acknowledgment else f"{acknowledgment} {llm_response}"
-        
         # Save to transcript
         conversation_transcript.append({
             'role': 'assistant',
             'content': llm_response,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.utcnow().isoformat(),
+            'rag_used': True
         })
         
         logger.info(f"AGENT ({current_agent_id}): '{llm_response[:100]}...'")
@@ -759,12 +832,12 @@ Instructions:
         db.add(ConversationTurn(
             call_sid=call_sid,
             role="assistant",
-            content=full_response,
+            content=llm_response,
             created_at=datetime.utcnow()
         ))
         db.commit()
         
-        # Stream LLM response
+        # Stream LLM response (NO acknowledgment before this)
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, llm_response, stop_audio_flag
         )
@@ -804,6 +877,7 @@ Instructions:
             )
 
 
+
 async def process_and_respond_outbound(
     transcript: str,
     websocket: WebSocket,
@@ -823,36 +897,37 @@ async def process_and_respond_outbound(
     rag = get_rag_service()
     
     try:
-        # Generate acknowledgment based on intent
-        objection_type = intent_analysis.get('objection_type', 'none')
-        intent_type = intent_analysis.get('intent_type')
+        # Determine if we should use RAG
+        rag_decision = should_use_rag(transcript, conversation_transcript)
         
-        if intent_type == 'objection':
-            if objection_type == 'price':
-                acknowledgment = "I understand cost is important. Let me show you the value we offer."
-            elif objection_type == 'time':
-                acknowledgment = "I appreciate you're busy. Let me quickly highlight the key benefits."
-            elif objection_type == 'trust':
-                acknowledgment = "That's a fair concern. Let me share what our customers say."
-            else:
-                acknowledgment = "I hear your concern. Let me address that for you."
-        elif intent_type == 'soft_interest':
-            acknowledgment = "Great! Let me share more details that I think you'll find valuable."
-        elif intent_type == 'question':
-            acknowledgment = "Excellent question! Let me get you that information."
-        else:
-            acknowledgment = prompt_template_service.generate_rag_acknowledgment(
-                transcript,
-                current_agent_context
+        logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
+        
+        # If direct response available, use it
+        if not rag_decision['use_rag'] and rag_decision['direct_response']:
+            logger.info(f"Using direct response: '{rag_decision['direct_response']}'")
+            
+            # Save to transcript
+            conversation_transcript.append({
+                'role': 'assistant',
+                'content': rag_decision['direct_response'],
+                'timestamp': datetime.utcnow().isoformat(),
+                'rag_used': False
+            })
+            
+            # Save to DB
+            db.add(ConversationTurn(
+                call_sid=call_sid,
+                role="assistant",
+                content=rag_decision['direct_response'],
+                created_at=datetime.utcnow()
+            ))
+            db.commit()
+            
+            # Stream response directly
+            await stream_elevenlabs_audio_with_playback(
+                websocket, stream_sid, rag_decision['direct_response'], stop_audio_flag
             )
-        
-        logger.info(f"Acknowledgment: '{acknowledgment}'")
-        
-        await stream_elevenlabs_audio_with_playback(
-            websocket, stream_sid, acknowledgment, stop_audio_flag
-        )
-        
-        await asyncio.sleep(0.3)
+            return
         
         # Prepare conversation history with AI intent context
         conversation_messages = []
@@ -864,6 +939,8 @@ async def process_and_respond_outbound(
                 })
         
         buying_readiness = intent_analysis.get('buying_readiness', 0)
+        objection_type = intent_analysis.get('objection_type', 'none')
+        intent_type = intent_analysis.get('intent_type')
         
         # Add AI intent analysis to system context
         if call_type == "outgoing":
@@ -875,33 +952,32 @@ Objection Type: {objection_type}
 Reasoning: {intent_analysis.get('reasoning')}
 
 [SALES STRATEGY]
-...
+- Keep responses concise (under 100 words)
+- Be natural and conversational
+- Focus on benefits, not features
+- Address objections directly
 
 [BOOKING INSTRUCTIONS]
 When customer shows strong interest (readiness >= 70%), naturally ask:
 "Would you like to schedule a consultation with us?"
 
 BOOKING FLOW:
-1. Ask for preferred date: "What date works for you? We have availability starting from tomorrow ({(datetime.utcnow() + timedelta(days=1)).strftime('%B %d, %Y')})"
-2. Customer provides date
-3. Use check_slot_availability with format YYYY-MM-DD (example: 2025-11-29)
-4. Ask for email after slot confirmed
-5. Use verify_customer_email to spell and confirm
-6. Use create_booking with all confirmed details
+1. Ask for preferred date
+2. Use check_slot_availability
+3. Ask for email
+4. Use verify_customer_email
+5. Use create_booking with confirmed details
 
-IMPORTANT DATE RULES:
-- Always suggest tomorrow's date as reference: {(datetime.utcnow() + timedelta(days=1)).strftime('%B %d, %Y')}
-- Accept dates in natural language (tomorrow, next Monday, etc.) and convert to YYYY-MM-DD
-- Dates must be in the future (tomorrow or later)
-- Business hours: 9 AM to 6 PM
-- Each slot is 30 minutes
+IMPORTANT:
+- Keep responses brief and conversational
+- Don't overwhelm with too much information
 """
             conversation_messages.insert(0, {
                 'role': 'system',
                 'content': persuasion_context
             })
         
-        # Get RAG response
+        # Get RAG response with token limit
         response_chunks = []
         async for chunk in rag.get_answer(
             company_id=company_id,
@@ -914,14 +990,14 @@ IMPORTANT DATE RULES:
             response_chunks.append(chunk)
         
         llm_response = "".join(response_chunks)
-        full_response = f"{acknowledgment} {llm_response}"
         
         # Save to transcript
         conversation_transcript.append({
             'role': 'assistant',
-            'content': full_response,
+            'content': llm_response,
             'timestamp': datetime.utcnow().isoformat(),
-            'intent_handled': intent_type
+            'intent_handled': intent_type,
+            'rag_used': True
         })
         
         logger.info(f"AGENT ({current_agent_id}): '{llm_response[:100]}...'")
@@ -930,12 +1006,11 @@ IMPORTANT DATE RULES:
         db.add(ConversationTurn(
             call_sid=call_sid,
             role="assistant",
-            content=full_response,
+            content=llm_response,
             created_at=datetime.utcnow()
         ))
         db.commit()
-        
-        # Stream LLM response
+
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, llm_response, stop_audio_flag
         )
@@ -949,7 +1024,6 @@ IMPORTANT DATE RULES:
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, error_msg, stop_audio_flag
         )
-
 
 @router.post("/outbound-connect")
 async def handle_outbound_connect(request: Request):

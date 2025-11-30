@@ -22,12 +22,14 @@ class RAGService:
             model=settings.openai_model or "gpt-4o-mini",
             temperature=0.3,
             openai_api_key=settings.openai_api_key,
+            max_tokens=150,
             streaming=True
         )
 
         self.llm_with_functions = ChatOpenAI(
             model=settings.openai_model or "gpt-4o-mini",
             temperature=0.3,
+            max_tokens=150,
             openai_api_key=settings.openai_api_key
         ).bind(functions=TICKET_FUNCTIONS)
         
