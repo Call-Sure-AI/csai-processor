@@ -1353,6 +1353,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     current_processing_task = None
     greeting_sent = False
     greeting_start_time = None
+    rejection_count = 0  # Track rejections
     
     logger.info(f"Query params: {dict(websocket.query_params)}")
     
@@ -1363,6 +1364,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
                 data = json.loads(message)
                 event_type = data.get("event")
+                
                 logger.info(f"Received event #{attempt + 1}: {event_type}")
                 
                 if event_type == "connected":
@@ -1373,6 +1375,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     first_message_data = data
                     logger.info(f"Extracted call_sid: {call_sid}")
                     break
+        
         except asyncio.TimeoutError:
             logger.error("Timeout waiting for start event")
             await websocket.close(code=1008)
@@ -1400,7 +1403,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     logger.info(f"Customer: {customer_name}, Campaign: {campaign_id}")
     
-    
+    # Fetch master agent config
     master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
     current_agent_context = master_agent
     
@@ -1421,7 +1424,21 @@ async def handle_outbound_stream(websocket: WebSocket):
         return
     
     logger.info(f"Master: {master_agent['name']}")
+
+    additional_context = master_agent.get('additional_context', {})
+    business_context = additional_context.get('businessContext', 'our services')
+
+    company_name = "our company"
     
+    greeting = (
+        f"Hello {customer_name}! This is calling from {company_name}. "
+        f"I'm reaching out because we offer {business_context}. "
+        f"Would you be interested in learning more about this?"
+    )
+    
+    logger.info(f"Greeting pre-generated: '{greeting}'")
+    
+    # Load specialized agents
     available_agents = await agent_config_service.get_company_agents(company_id)
     specialized_agents = [
         a for a in available_agents
@@ -1451,6 +1468,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             nonlocal current_processing_task
             nonlocal stop_audio_flag
             nonlocal greeting_start_time
+            nonlocal rejection_count
             
             if not transcript.strip():
                 return
@@ -1458,20 +1476,18 @@ async def handle_outbound_stream(websocket: WebSocket):
             if greeting_start_time:
                 elapsed = (datetime.utcnow() - greeting_start_time).total_seconds()
                 if elapsed < 3:
-                    logger.debug(f"⏭️ Ignoring early transcript (echo): '{transcript}' at {elapsed:.1f}s")
+                    logger.debug(f"Ignoring early transcript (echo): '{transcript}' at {elapsed:.1f}s")
                     return
             
-            logger.info(f"📝 Transcript: '{transcript}' | Agent speaking: {is_agent_speaking}")
+            logger.info(f"Transcript: '{transcript}' | Agent speaking: {is_agent_speaking}")
             
             if is_agent_speaking:
                 word_count = len(transcript.split())
                 if word_count >= 3:
-                    logger.warning(f"⚠️ REAL INTERRUPTION: '{transcript}'")
-                    
-                    # Set stop flag
+                    logger.warning(f"REAL INTERRUPTION: '{transcript}'")
+
                     stop_audio_flag['stop'] = True
-                    
-                    # Cancel BOTH audio playback AND processing tasks
+
                     if current_audio_task and not current_audio_task.done():
                         logger.info("Cancelling audio playback...")
                         current_audio_task.cancel()
@@ -1539,54 +1555,63 @@ async def handle_outbound_stream(websocket: WebSocket):
             should_persuade = intent_analysis.get('should_persuade', True)
             should_end_call = intent_analysis.get('should_end_call', False)
             
-            # Handle hard rejection - final attempt
-            if call_type == "outgoing" and intent_type == 'rejection' and not should_persuade:
-                logger.info(f"HARD REJECTION DETECTED - Final attempt to re-engage")
+            logger.info(f"PERSUASION MODE (Intent: {intent_type}, Readiness: {buying_readiness}%)")
+
+            if intent_type == 'rejection':
+                rejection_count += 1
+                logger.warning(f"Rejection #{rejection_count} detected")
                 
-                farewell_persuasion = (
-                    f"I completely understand, {customer_name}. "
-                    f"We're offering a special promotion this week. "
-                    f"Would you like to hear about it quickly before I let you go?"
-                )
-                
-                conversation_transcript.append({
-                    'role': 'assistant',
-                    'content': farewell_persuasion,
-                    'timestamp': datetime.utcnow().isoformat(),
-                    'rejection_handled': True
-                })
-                
-                try:
-                    db.add(ConversationTurn(
-                        call_sid=call_sid,
-                        role="assistant",
-                        content=farewell_persuasion,
-                        created_at=datetime.utcnow()
-                    ))
-                    db.commit()
-                except Exception as e:
-                    logger.error(f"DB error: {e}")
-                
-                is_agent_speaking = True
-                stop_audio_flag['stop'] = False
-                
-                current_audio_task = asyncio.create_task(
-                    stream_elevenlabs_audio_with_playback(websocket, stream_sid, farewell_persuasion, stop_audio_flag)
-                )
-                
-                try:
-                    await current_audio_task
-                except asyncio.CancelledError:
-                    logger.info("Audio cancelled by interruption")
-                finally:
-                    is_agent_speaking = False
-                    current_audio_task = None
-                
-                return
+                if rejection_count >= 2:
+                    logger.info(f"2 REJECTIONS DETECTED - Ending call gracefully")
+                    
+                    farewell_message = (
+                        f"I completely understand, {customer_name}. "
+                        f"Thank you for your time today. If you change your mind or have any questions in the future, "
+                        f"please don't hesitate to reach out. Have a wonderful day!"
+                    )
+                    
+                    conversation_transcript.append({
+                        'role': 'assistant',
+                        'content': farewell_message,
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'call_ended': True
+                    })
+                    
+                    try:
+                        db.add(ConversationTurn(
+                            call_sid=call_sid,
+                            role="assistant",
+                            content=farewell_message,
+                            created_at=datetime.utcnow()
+                        ))
+                        db.commit()
+                    except Exception as e:
+                        logger.error(f"DB error: {e}")
+                    
+                    is_agent_speaking = True
+                    stop_audio_flag['stop'] = False
+                    
+                    current_audio_task = asyncio.create_task(
+                        stream_elevenlabs_audio_with_playback(websocket, stream_sid, farewell_message, stop_audio_flag)
+                    )
+                    
+                    try:
+                        await current_audio_task
+                    except asyncio.CancelledError:
+                        logger.info("Farewell message cancelled")
+                    finally:
+                        is_agent_speaking = False
+                        current_audio_task = None
+                    
+                    # End the call
+                    logger.info("Ending call after 2 rejections")
+                    return
             else:
-                logger.info(f"PERSUASION MODE (Intent: {intent_type}, Readiness: {buying_readiness}%)")
-            
-            # Agent routing
+                # Reset rejection count if customer shows interest
+                if intent_type in ['soft_interest', 'strong_buying', 'question']:
+                    rejection_count = 0
+                    logger.info("Customer engaged - reset rejection count")
+
             current_agent_id = master_agent_id
             
             if specialized_agents:
@@ -1605,7 +1630,6 @@ async def handle_outbound_stream(websocket: WebSocket):
                     current_agent_id = detected_agent
                     
                     agent_info = await agent_config_service.get_agent_by_id(detected_agent)
-                    
                     if agent_info:
                         current_agent_context = agent_info
                         
@@ -1613,6 +1637,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                             logger.info(f"RE-ROUTING to {agent_info['name']}")
                             
                             routing_message = f"Let me connect you with our {agent_info['name']}."
+                            
                             is_agent_speaking = True
                             stop_audio_flag['stop'] = False
                             
@@ -1625,7 +1650,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                             try:
                                 await current_audio_task
                             except asyncio.CancelledError:
-                                logger.info("Audio cancelled by interruption")
+                                logger.info("Routing message cancelled")
                             finally:
                                 is_agent_speaking = False
                                 current_audio_task = None
@@ -1635,8 +1660,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     logger.info(f"   Staying with MASTER")
             
             call_state["interaction_count"] += 1
-            
-            # Process and respond
+
             is_agent_speaking = True
             await asyncio.sleep(0.3)
             stop_audio_flag['stop'] = False
@@ -1667,35 +1691,29 @@ async def handle_outbound_stream(websocket: WebSocket):
                 is_agent_speaking = False
                 current_audio_task = None
                 current_processing_task = None
-        
-        # Initialize Deepgram
+
         session_id = f"deepgram_{call_sid}"
         logger.info(f"Initializing Deepgram...")
         
+        deepgram_start = datetime.utcnow()
         deepgram_connected = await deepgram_service.initialize_session(
             session_id=session_id,
             callback=on_deepgram_transcript
         )
+        deepgram_duration = (datetime.utcnow() - deepgram_start).total_seconds()
         
         if not deepgram_connected:
             logger.error(f"Deepgram connection failed")
             await websocket.close()
             return
         
-        logger.info(f"Deepgram connected")
-        
+        logger.info(f"Deepgram connected in {deepgram_duration:.2f}s")
+
         if first_message_data and first_message_data.get("event") == "start":
-            logger.info("Processing buffered start event...")
             stream_sid = first_message_data.get("streamSid")
             logger.info(f"STREAM STARTED: {stream_sid}")
-            
-            greeting = prompt_template_service.generate_outbound_sales_greeting(
-                agent=master_agent,
-                customer_name=customer_name,
-                campaign_id=campaign_id
-            )
-            
-            logger.info(f"Sending dynamic greeting: '{greeting}'")
+
+            logger.info(f"Sending greeting immediately...")
             
             conversation_transcript.append({
                 'role': 'assistant',
@@ -1707,13 +1725,16 @@ async def handle_outbound_stream(websocket: WebSocket):
             stop_audio_flag['stop'] = False
             greeting_start_time = datetime.utcnow()
             
+            greeting_audio_start = datetime.utcnow()
+            
             current_audio_task = asyncio.create_task(
                 stream_elevenlabs_audio_with_playback(websocket, stream_sid, greeting, stop_audio_flag)
             )
             
             try:
                 await current_audio_task
-                logger.info("✓ Greeting completed - ready for customer response")
+                greeting_total_duration = (datetime.utcnow() - greeting_audio_start).total_seconds()
+                logger.info(f"Greeting completed in {greeting_total_duration:.2f}s - ready for customer response")
             except asyncio.CancelledError:
                 logger.info("Greeting cancelled")
             finally:
@@ -1722,7 +1743,6 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             greeting_sent = True
             await asyncio.sleep(0.5)
-            logger.info(f"Greeting sent")
         
         logger.info("Entering message loop...")
         
@@ -1738,15 +1758,9 @@ async def handle_outbound_stream(websocket: WebSocket):
                 elif event == "start":
                     if not greeting_sent:
                         stream_sid = data.get("streamSid")
-                        logger.info(f"STREAM STARTED: {stream_sid}")
-                        
-                        greeting = prompt_template_service.generate_outbound_sales_greeting(
-                            agent=master_agent,
-                            customer_name=customer_name,
-                            campaign_id=campaign_id
-                        )
-                        
-                        logger.info(f"Sending greeting: '{greeting}'")
+                        logger.info(f"STREAM STARTED (delayed): {stream_sid}")
+
+                        logger.info(f"Sending greeting...")
                         
                         conversation_transcript.append({
                             'role': 'assistant',
@@ -1764,6 +1778,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                         
                         try:
                             await current_audio_task
+                            logger.info("Greeting completed")
                         except asyncio.CancelledError:
                             pass
                         finally:
@@ -1772,10 +1787,9 @@ async def handle_outbound_stream(websocket: WebSocket):
                         
                         greeting_sent = True
                         await asyncio.sleep(0.5)
-                        logger.info(f"Greeting sent")
                 
                 elif event == "media":
-                    # CRITICAL: Always process user audio for real-time interruption
+                    # Process user audio for interruption detection
                     payload = data.get("media", {}).get("payload")
                     if payload:
                         audio = await deepgram_service.convert_twilio_audio(payload, session_id)
@@ -1801,12 +1815,10 @@ async def handle_outbound_stream(websocket: WebSocket):
         logger.error(traceback.format_exc())
     
     finally:
-        # ✅ CLEANUP
         logger.info(f"Cleaning up {call_sid}")
         logger.info(f"From: {call_metadata.get('from_number')}")
         logger.info(f"To: {call_metadata.get('to_number')}")
         logger.info(f"Company ID: {call_metadata.get('company_id')}")
-        logger.info(f"Call Type: {call_metadata.get('call_type')}")
         
         try:
             call_duration = 0
@@ -1836,22 +1848,20 @@ async def handle_outbound_stream(websocket: WebSocket):
                 
                 if call_record:
                     call_record.transcription = s3_urls.get('transcript_url')
-                    call_record.company_id = company_id
-                    call_record.from_number = call_metadata.get('from_number')
-                    call_record.to_number = call_metadata.get('to_number')
-                    call_record.call_type = CallType.outgoing
+                    call_record.company_id = s3_urls.get('company_id')
+                    call_record.from_number = s3_urls.get('from_number')
+                    call_record.to_number = s3_urls.get('to_number')
                     call_record.duration = call_duration
                     call_record.status = 'completed'
                     call_record.ended_at = datetime.utcnow()
                     db.commit()
-                    logger.info(f"Database updated (outgoing)")
+                    logger.info(f"Database updated with S3 URLs")
                 else:
                     new_call = Call(
                         call_sid=call_sid,
-                        company_id=company_id,
+                        company_id=call_metadata.get('company_id'),
                         from_number=call_metadata.get('from_number'),
                         to_number=call_metadata.get('to_number'),
-                        call_type=CallType.outgoing,
                         status='completed',
                         duration=call_duration,
                         transcription=s3_urls.get('transcript_url'),
@@ -1860,7 +1870,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                     )
                     db.add(new_call)
                     db.commit()
-                    logger.info(f"Call record created (outgoing)")
+                    logger.info(f"Call record created")
+            
             except Exception as db_error:
                 logger.error(f"Database update error: {db_error}")
                 db.rollback()
@@ -1881,6 +1892,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         db.close()
         
         logger.info(f"Cleanup complete")
+
 
 @router.post("/initiate-outbound-call")
 async def initiate_outbound_call(request: Request):
