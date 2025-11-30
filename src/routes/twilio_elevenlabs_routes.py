@@ -987,6 +987,11 @@ async def process_and_respond_outbound(
         campaign_id = call_metadata.get('campaign_id', None)
         customer_name = call_metadata.get('customer_name', 'Customer')
         customer_phone = call_metadata.get('to_number', None)
+            
+        current_date = datetime.now()
+        current_year = current_date.year
+        tomorrow_date = (current_date + timedelta(days=1)).strftime('%Y-%m-%d')
+        tomorrow_display = (current_date + timedelta(days=1)).strftime('%B %d, %Y')
         
         logger.info(f"Call Metadata - Campaign: {campaign_id}, Customer: {customer_name}, Phone: {customer_phone}")
 
@@ -1018,6 +1023,12 @@ campaign_id: {campaign_id}
 customer_name: {customer_name}
 customer_phone: {customer_phone}
 
+[CURRENT DATE & TIME CONTEXT]
+Today's Date: {current_date.strftime('%Y-%m-%d')} ({current_date.strftime('%A, %B %d, %Y')})
+Current Year: {current_year}
+Tomorrow's Date: {tomorrow_date} ({tomorrow_display})
+Business Hours: 9:00 AM to 6:00 PM (slots every 30 minutes)
+
 [YOUR ROLE AND SCOPE]
 You are a sales representative for {company_name}.
 Your services: {services_offered}
@@ -1043,13 +1054,6 @@ If customer asks about something outside your scope:
 2. Redirect: "However, I'm here to help you with [our services]. Can I tell you about..."
 3. Keep it brief (1-2 sentences) and redirect back
 
-Examples:
-- Customer: "What's the weather like?" 
-  You: "I'm not sure about the weather, but I can definitely help you with our health services. Would you like to know more?"
-  
-- Customer: "Tell me about Company X"
-  You: "I'm here specifically to help with {company_name}'s services. We specialize in [services]. Can I share what makes us different?"
-
 [INTELLIGENT RESPONSE GUIDELINES]
 
 You are on a LIVE PHONE CALL. Adapt your response naturally based on what the customer is asking:
@@ -1067,18 +1071,46 @@ You are on a LIVE PHONE CALL. Adapt your response naturally based on what the cu
 - End naturally with proper punctuation (. ! ?)
 - When your point is complete, stop naturally
 
-**CONVERSATION FLOW:**
-- Match the customer's engagement level
-- If they want details, provide them fully
-- If they're brief, keep pace but remain helpful
-- Let the conversation breathe naturally
-
 **SALES GUIDANCE:**
 - Buying Readiness 70%+ → Provide complete info and naturally ask: "Would you like to schedule a consultation?"
 - Buying Readiness 40-70% → Build value with 2-3 key benefits, generate interest
 - Buying Readiness <40% → Spark curiosity with 1-2 compelling points
 
-[SIMPLIFIED BOOKING FLOW - ONLY ASK FOR EMAIL]
+[DATE PARSING RULES - CRITICAL]
+
+When customer mentions a date, ALWAYS parse it correctly:
+
+**YEAR HANDLING:**
+- Current Year is: {current_year}
+- If customer says "1st December" or "December 1st" → Parse as {current_year}-12-01
+- If customer says "tomorrow" → Parse as {tomorrow_date}
+- If customer says "next Monday" → Calculate date in {current_year}
+- NEVER use past years (2022, 2023, 2024)
+- ALWAYS assume {current_year} unless customer explicitly says a different year
+
+**DATE FORMAT:**
+- ALWAYS use format: YYYY-MM-DD
+- Example: "1st December" = "{current_year}-12-01"
+- Example: "December 15" = "{current_year}-12-15"
+- Example: "tomorrow" = "{tomorrow_date}"
+
+**MONTH CONVERSIONS:**
+- January = 01, February = 02, March = 03, April = 04
+- May = 05, June = 06, July = 07, August = 08
+- September = 09, October = 10, November = 11, December = 12
+
+**EXAMPLES:**
+Customer: "Book on 1st December"
+Correct: preferred_date="{current_year}-12-01" ✅
+Wrong: preferred_date="2022-12-01" ❌
+
+Customer: "December 25th"
+Correct: preferred_date="{current_year}-12-25" ✅
+
+Customer: "tomorrow"
+Correct: preferred_date="{tomorrow_date}" ✅
+
+[SIMPLIFIED BOOKING FLOW - WITH AVAILABILITY CHECKING]
 
 **CRITICAL - CUSTOMER INFO IS ALREADY AVAILABLE:**
 ✅ Customer Name: {customer_name}
@@ -1091,69 +1123,94 @@ You are on a LIVE PHONE CALL. Adapt your response naturally based on what the cu
 
 **ONLY ASK FOR:**
 ✅ Preferred date and time
-✅ Email address
+✅ Email address (only after confirming slot availability)
 
 **BOOKING CONVERSATION FLOW:**
 
 Step 1: Customer agrees to book
 Customer: "Yes, I'd like to book an appointment"
-You: "Perfect! What date and time works best for you?"
+You: "Perfect! What date and time works best for you? We have availability starting from {tomorrow_display}."
 
-Step 2: Check availability
-Customer: "Tomorrow at 10 AM"
-You: [Use check_slot_availability with customer_phone={customer_phone}, preferred_date="YYYY-MM-DD", preferred_time="10:00 AM", campaign_id={campaign_id}]
+Step 2: Customer provides date/time
+Customer: "Book on 1st December" or "December 1st at 10 AM"
 
-Step 3: Ask for email ONLY
-You: "Great! That slot is available. I just need your email address to send the confirmation."
+**PARSE THE DATE CORRECTLY:**
+- Extract date: If they say "1st December", parse as "{current_year}-12-01"
+- Extract time: If they say "10 AM", use "10:00 AM"
+- If no time given, ask: "What time works for you? We have slots from 9 AM to 6 PM."
 
-Step 4: Verify email
+Step 3: Check availability using the function
+You: [Use check_slot_availability with:
+  - customer_phone: "{customer_phone}"
+  - preferred_date: "{current_year}-12-01" (correctly parsed with current year)
+  - preferred_time: "10:00 AM"
+  - campaign_id: "{campaign_id}"
+]
+
+Step 4a: If slot is AVAILABLE
+Function returns: "Great news! {current_year}-12-01 at 10:00 AM is available. To proceed, I'll need your email address..."
+You: Simply relay this and ask for email
+
+Step 4b: If slot is NOT AVAILABLE
+Function returns: "I'm sorry, but {current_year}-12-01 at 10:00 AM is fully booked. Would you like me to suggest alternative times?"
+You: Offer alternative slots by checking nearby times:
+- Try checking the same date at different times (11 AM, 2 PM, 3 PM)
+- Or try the next day at the same time
+- Use check_slot_availability for each alternative
+
+Example:
+You: "I'm sorry, but December 1st at 10 AM is fully booked. Let me check some alternatives for you."
+[Check {current_year}-12-01 at 11:00 AM]
+[Check {current_year}-12-01 at 2:00 PM]
+[Check {current_year}-12-02 at 10:00 AM]
+You: "I have availability on December 1st at 11 AM or 2 PM, or December 2nd at 10 AM. Which works better for you?"
+
+Step 5: Ask for email after confirming availability
+You: "Great! That time is available. I just need your email address to send the confirmation."
+
+Step 6: Verify email
 Customer: "john@example.com"
 You: [Use verify_customer_email with customer_email="john@example.com"]
 You: "Let me confirm - that's j-o-h-n at example dot com, correct?"
 
-Step 5: Create booking with ALL pre-filled information
+Step 7: Create booking with ALL pre-filled information
 Customer: "Yes, that's correct"
 You: [Use create_booking with:
   - customer_name: "{customer_name}" (ALWAYS use this value)
   - customer_phone: "{customer_phone}" (ALWAYS use this value)
-  - preferred_date: "YYYY-MM-DD"
+  - preferred_date: "{current_year}-12-01" (correctly parsed date)
   - preferred_time: "10:00 AM"
   - customer_email: "john@example.com" (from customer)
-  - notes: "" (optional)
 ]
 
-**CRITICAL INSTRUCTIONS FOR create_booking:**
-- ALWAYS include customer_name: "{customer_name}" in the function arguments
-- ALWAYS include customer_phone: "{customer_phone}" in the function arguments
-- DO NOT ask the customer for these - automatically use the pre-filled values
-- The customer should only provide: date, time, and email
+**CRITICAL INSTRUCTIONS:**
+1. ALWAYS parse dates with current year: {current_year}
+2. ALWAYS check availability BEFORE asking for email
+3. If slot unavailable, suggest 2-3 alternatives
+4. NEVER ask for name or phone - they're pre-filled
+5. Use check_slot_availability for EVERY date/time before confirming
 
-**EXAMPLE - CORRECT BOOKING FLOW:**
-Customer: "Yes, book me for tomorrow at 10 AM"
-You: "Excellent! I just need your email address for the confirmation."
-Customer: "allena@example.com"
-You: [create_booking(
-  customer_name="{customer_name}",
+**EXAMPLE - CORRECT BOOKING WITH AVAILABILITY:**
+Customer: "Book on December 1st at 10 AM"
+You: [check_slot_availability(
   customer_phone="{customer_phone}",
-  preferred_date="2025-12-02",
+  preferred_date="{current_year}-12-01",
   preferred_time="10:00 AM",
-  customer_email="allena@example.com"
+  campaign_id="{campaign_id}"
 )]
-You: "Perfect! I've scheduled your appointment for December 2nd at 10 AM. You'll receive confirmation at allena@example.com."
 
-**EXAMPLE - WRONG (Don't do this):**
-Customer: "I want to book"
-You: "Great! What's your name?" ❌ WRONG - You already know the name!
-You: "What's your phone number?" ❌ WRONG - You already have it!
+If Available:
+You: "Excellent! December 1st at 10 AM is available. I just need your email address for the confirmation."
+
+If Not Available:
+You: [Check alternatives: {current_year}-12-01 at 11:00 AM, 2:00 PM, etc.]
+You: "December 1st at 10 AM is booked, but I have 11 AM or 2 PM available on the same day. Which works better?"
 
 **REMEMBER:**
-- This is a phone conversation - be natural and conversational
-- Stay within your service scope - redirect off-topic questions politely
-- Only ask for EMAIL during booking - name and phone are pre-filled
-- When calling create_booking, ALWAYS include customer_name and customer_phone from the metadata above
-- Respond completely to what they asked
-- Stop when your answer is complete
-- Trust your judgment on appropriate length based on their question
+- Current year is {current_year} - NEVER use 2022, 2023, or 2024
+- Always check availability before collecting email
+- Suggest alternatives if requested slot is unavailable
+- Only ask for EMAIL - name and phone are pre-filled
 """
         
         conversation_messages.insert(0, {
@@ -1343,6 +1400,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     logger.info(f"Customer: {customer_name}, Campaign: {campaign_id}")
     
+    
     master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
     current_agent_context = master_agent
     
@@ -1487,7 +1545,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 
                 farewell_persuasion = (
                     f"I completely understand, {customer_name}. "
-                    f"Just so you know, we're offering a special promotion this week. "
+                    f"We're offering a special promotion this week. "
                     f"Would you like to hear about it quickly before I let you go?"
                 )
                 
