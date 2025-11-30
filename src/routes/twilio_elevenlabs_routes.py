@@ -971,9 +971,22 @@ async def process_and_respond_outbound(
             is_booking_mode = True
             booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_DATE, "Customer expressed interest")
         
-        # Parse date/time if mentioned
+        # Parse date/time if mentioned - UPDATED WITH MORE KEYWORDS
         datetime_info = None
-        if any(word in transcript.lower() for word in ['tomorrow', 'today', 'monday', 'tuesday', 'december', 'am', 'pm', ':', 'o\'clock']):
+        datetime_keywords = [
+            'now', 'immediately', 'right now', 'asap',  # Immediate scheduling
+            'tomorrow', 'today', 'tonight',  # Relative days
+            'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',  # Days
+            'january', 'february', 'march', 'april', 'may', 'june',  # Months
+            'july', 'august', 'september', 'october', 'november', 'december',
+            'am', 'pm', ':', 'o\'clock', 'oclock',  # Time indicators
+            'morning', 'afternoon', 'evening', 'night',  # Time of day
+            'next week', 'this week', 'next month'  # Relative periods
+        ]
+        
+        if any(word in transcript.lower() for word in datetime_keywords):
+            logger.info(f"🕐 Datetime keyword detected in: '{transcript}'")
+            
             datetime_info = await datetime_parser_service.parse_user_datetime(
                 user_input=transcript,
                 user_timezone=call_metadata.get('user_timezone', 'UTC'),
@@ -983,8 +996,10 @@ async def process_and_respond_outbound(
             if datetime_info['parsed_successfully'] and booking_session:
                 if datetime_info.get('date'):
                     booking_orchestrator.update_session_data(call_sid, 'date', datetime_info['date'])
+                    logger.info(f"✓ Captured date: {datetime_info['date']}")
                 if datetime_info.get('time'):
                     booking_orchestrator.update_session_data(call_sid, 'time', datetime_info['time'])
+                    logger.info(f"✓ Captured time: {datetime_info['time']}")
                 if datetime_info.get('datetime_iso'):
                     booking_orchestrator.update_session_data(call_sid, 'datetime_iso', datetime_info['datetime_iso'])
                 
@@ -1003,8 +1018,13 @@ async def process_and_respond_outbound(
         company_name = current_agent_context.get('name', 'our company')
         services = current_agent_context.get('additional_context', {}).get('businessContext', 'our services')
         
+        # Get current date info for suggestions
+        now = datetime.now()
+        tomorrow = now + timedelta(days=1)
+        day_after = now + timedelta(days=2)
+        
         if is_booking_mode:
-            # BOOKING MODE: Minimal prompt, orchestrator handles logic
+            # BOOKING MODE: Minimal prompt with datetime guidance
             next_action = booking_orchestrator.get_next_action(call_sid)
             collected = booking_session['collected_data']
             
@@ -1018,6 +1038,16 @@ async def process_and_respond_outbound(
 - Email: {collected['email'] or 'NEEDED'}
 
 **Next step:** {next_action['prompt_hint']}
+
+**IMPORTANT - If customer says "now" or "immediately":**
+The system will interpret this as the next available slot. You should then confirm:
+"I can schedule you for {datetime_info.get('user_friendly') if datetime_info else 'tomorrow at 10:00 AM'}. Does that work for you?"
+
+**If customer is vague about timing:**
+Suggest specific times:
+- "Would tomorrow at 10 AM work for you?"
+- "I have availability tomorrow ({tomorrow.strftime('%B %d')}) at 10 AM or 2 PM. Which works better?"
+- "How about {day_after.strftime('%B %d')} at 10 AM?"
 
 **Functions available:** check_slot_availability, verify_customer_email, create_booking
 
@@ -1084,8 +1114,8 @@ Be conversational and natural (2-3 sentences max)."""
                     company_id=company_id,
                     call_sid=call_sid,
                     campaign_id=campaign_id,
-                user_timezone=call_metadata.get('user_timezone', 'UTC'),  # NEW
-                business_hours={'start': '09:00', 'end': '18:00'}
+                    user_timezone=call_metadata.get('user_timezone', 'UTC'),
+                    business_hours={'start': '09:00', 'end': '18:00'}
                 )
                 
                 # Update state after function execution

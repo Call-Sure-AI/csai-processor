@@ -25,7 +25,7 @@ class DateTimeParserService:
         Parse natural language date/time to structured format
         
         Args:
-            user_input: "tomorrow at 2pm", "next Monday 10am", "December 1st"
+            user_input: "tomorrow at 2pm", "next Monday 10am", "December 1st", "now"
             user_timezone: User's timezone (e.g., "America/New_York")
             business_hours: {"start": "09:00", "end": "18:00", "timezone": "America/Chicago"}
         
@@ -51,8 +51,43 @@ class DateTimeParserService:
             parsed_date = None
             parsed_time = None
             
+            # NOW / IMMEDIATELY - HANDLE FIRST
+            if any(word in user_input_lower for word in ['now', 'immediately', 'right now', 'asap', 'as soon as possible']):
+                logger.info(f"Detected 'now' request: {user_input}")
+                
+                current_time = now.time()
+                
+                # If within business hours, use current time + 30 min (or next slot)
+                if business_hours:
+                    start_time = datetime.strptime(business_hours['start'], '%H:%M').time()
+                    end_time = datetime.strptime(business_hours['end'], '%H:%M').time()
+                    
+                    if start_time <= current_time <= end_time:
+                        # Within business hours - schedule 30 min from now
+                        next_slot = now + timedelta(minutes=30)
+                        parsed_date = next_slot.date()
+                        parsed_time = next_slot.time()
+                        logger.info(f"'now' → next available slot: {parsed_date} at {parsed_time}")
+                    else:
+                        # Outside business hours - schedule for next business day at opening
+                        if current_time > end_time:
+                            # After hours - schedule tomorrow
+                            parsed_date = (now + timedelta(days=1)).date()
+                            logger.info(f"After hours - scheduling for tomorrow")
+                        else:
+                            # Before hours - schedule today at opening
+                            parsed_date = now.date()
+                            logger.info(f"Before hours - scheduling for today at opening")
+                        
+                        parsed_time = start_time
+                else:
+                    # No business hours defined - use tomorrow at 10 AM as default
+                    parsed_date = (now + timedelta(days=1)).date()
+                    parsed_time = datetime.time(hour=10, minute=0)
+                    logger.info(f"'now' (no business hours) → tomorrow at 10 AM")
+            
             # Tomorrow
-            if 'tomorrow' in user_input_lower:
+            elif 'tomorrow' in user_input_lower:
                 parsed_date = (now + timedelta(days=1)).date()
             
             # Today
@@ -80,8 +115,8 @@ class DateTimeParserService:
                 except:
                     logger.warning(f"Could not parse date from: {user_input}")
             
-            # Parse time if not already parsed
-            if not parsed_time:
+            # Parse time if not already parsed (and not "now")
+            if not parsed_time and 'now' not in user_input_lower:
                 parsed_time = self._parse_time(user_input_lower)
             
             # Validate against business hours
@@ -131,6 +166,8 @@ class DateTimeParserService:
         
         except Exception as e:
             logger.error(f"Error parsing datetime: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 'parsed_successfully': False,
                 'error': str(e),
