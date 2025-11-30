@@ -647,8 +647,25 @@ async def stream_elevenlabs_audio_with_playback(websocket: WebSocket, stream_sid
     except Exception as e:
         logger.error(f"Error streaming audio: {e}")
 
-def should_use_rag(transcript: str, conversation_history: list) -> dict:
+def should_use_rag(transcript: str, conversation_history: list, intent_analysis: dict = None) -> dict:
     transcript_lower = transcript.lower().strip()
+    words = transcript_lower.split()
+    word_count = len(words)
+    
+    buying_readiness = 0
+    if intent_analysis:
+        buying_readiness = intent_analysis.get('buying_readiness', 0)
+    
+    is_active_conversation = buying_readiness > 40
+    
+    incomplete_indicators = ['then', 'so', 'but', 'and', 'or', 'because', 'well', 'um', 'uh']
+    last_word = words[-1] if words else ''
+    if last_word in incomplete_indicators and word_count <= 3:
+        return {
+            'use_rag': True,
+            'direct_response': None,
+            'reason': 'incomplete_sentence'
+        }
 
     simple_acknowledgments = [
         'ok', 'okay', 'thanks', 'thank you', 'alright', 'sure', 
@@ -656,21 +673,33 @@ def should_use_rag(transcript: str, conversation_history: list) -> dict:
         'i see', 'makes sense', 'cool', 'great', 'perfect', 'fine'
     ]
 
-    words = transcript_lower.split()
-    if len(words) <= 3 and any(ack in transcript_lower for ack in simple_acknowledgments):
-        responses = [
-            "Is there anything else I can help you with?",
-            "What else can I assist you with today?",
-            "Do you have any other questions?",
-            "Anything else I can help with?"
-        ]
-        import random
+    if word_count <= 2 and transcript_lower in simple_acknowledgments:
+        if is_active_conversation:
+            return {
+                'use_rag': True,
+                'direct_response': None,
+                'reason': 'active_conversation_acknowledgment'
+            }
+        else:
+            responses = [
+                "Is there anything else I can help you with?",
+                "What else can I assist you with today?",
+                "Do you have any other questions?"
+            ]
+            import random
+            return {
+                'use_rag': False,
+                'direct_response': random.choice(responses),
+                'reason': 'simple_acknowledgment'
+            }
+
+    if transcript_lower in ['thanks', 'thank you', 'thanks bye', 'thank you bye']:
         return {
             'use_rag': False,
-            'direct_response': random.choice(responses),
-            'reason': 'simple_acknowledgment'
+            'direct_response': "You're welcome! Have a great day!",
+            'reason': 'gratitude_farewell'
         }
-    
+
     booking_keywords = ['book', 'schedule', 'appointment', 'slot', 'available', 'reserve', 'confirm booking']
     if any(keyword in transcript_lower for keyword in booking_keywords):
         info_keywords = ['when', 'what time', 'how', 'can i', 'do you', 'is it possible']
@@ -684,14 +713,16 @@ def should_use_rag(transcript: str, conversation_history: list) -> dict:
             }
 
     greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
-    if any(greeting in transcript_lower for greeting in greetings) and len(words) <= 4:
+    if any(greeting in transcript_lower for greeting in greetings) and word_count <= 4:
+        if len(conversation_history) > 2:
+            return {'use_rag': True, 'direct_response': None, 'reason': 'mid_conversation'}
         return {
             'use_rag': False,
             'direct_response': "Hello! How can I assist you today?",
             'reason': 'greeting'
         }
 
-    farewells = ['bye', 'goodbye', 'see you', 'talk later', 'have a good', 'thanks for', 'that\'s all']
+    farewells = ['bye', 'goodbye', 'see you', 'talk later', 'have a good', 'that\'s all', 'i\'m done', 'all done']
     if any(farewell in transcript_lower for farewell in farewells):
         return {
             'use_rag': False,
@@ -700,6 +731,7 @@ def should_use_rag(transcript: str, conversation_history: list) -> dict:
         }
 
     return {'use_rag': True, 'direct_response': None, 'reason': 'complex_query'}
+
 
 async def process_and_respond_incoming(
     transcript: str,

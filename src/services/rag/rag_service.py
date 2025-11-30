@@ -22,14 +22,14 @@ class RAGService:
             model=settings.openai_model or "gpt-4o-mini",
             temperature=0.3,
             openai_api_key=settings.openai_api_key,
-            max_tokens=150,
+            max_tokens=80,
             streaming=True
         )
 
         self.llm_with_functions = ChatOpenAI(
             model=settings.openai_model or "gpt-4o-mini",
             temperature=0.3,
-            max_tokens=150,
+            max_tokens=80,
             openai_api_key=settings.openai_api_key
         ).bind(functions=TICKET_FUNCTIONS)
         
@@ -59,7 +59,7 @@ class RAGService:
         role_description = additional_context.get('roleDescription', '')
         
         # Extract response settings
-        max_tokens = agent_config.get('max_response_tokens', 300)
+        max_tokens = agent_config.get('max_response_tokens', 80)
 
         buying_readiness = 0
         intent_type = "unknown"
@@ -152,7 +152,7 @@ Agent: [Immediately calls create_booking] ❌ WRONG
 **Communication Guidelines**:
 - Tone: {tone.title()}
 - Language: {language.title()}
-- Keep responses conversational and under {max_tokens // 4} words
+- Keep responses conversational and under {max_tokens // 2} words
 - Be empathetic, clear, and solution-focused
 - Listen actively and acknowledge concerns
 
