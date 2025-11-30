@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Optional, Tuple
-from datetime import timedelta
+from datetime import datetime, timedelta, time, date  # ✅ Import the classes directly
 import pytz
 from dateutil import parser as date_parser
 import re
@@ -83,7 +83,7 @@ class DateTimeParserService:
                 else:
                     # No business hours defined - use tomorrow at 10 AM as default
                     parsed_date = (now + timedelta(days=1)).date()
-                    parsed_time = datetime.time(hour=10, minute=0)
+                    parsed_time = time(hour=10, minute=0)
                     logger.info(f"'now' (no business hours) → tomorrow at 10 AM")
             
             # Tomorrow
@@ -174,7 +174,7 @@ class DateTimeParserService:
                 'original_input': user_input
             }
     
-    def _parse_day_name(self, text: str, reference_date: datetime) -> datetime.date:
+    def _parse_day_name(self, text: str, reference_date: datetime) -> date:
         """Parse 'next Monday', 'this Friday', etc."""
         days = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
@@ -190,7 +190,7 @@ class DateTimeParserService:
         
         return None
     
-    def _parse_time(self, text: str) -> Optional[datetime.time]:
+    def _parse_time(self, text: str) -> Optional[time]:
         """Extract time from text"""
         # Pattern: "2pm", "2:30pm", "14:00", "2 pm"
         patterns = [
@@ -214,7 +214,7 @@ class DateTimeParserService:
                     elif meridiem == 'am' and hour == 12:
                         hour = 0
                     
-                    return datetime.time(hour=hour, minute=minute)
+                    return time(hour=hour, minute=minute)
                 
                 elif len(groups) == 2 and groups[1] in ['am', 'pm']:  # 2pm format
                     hour = int(groups[0])
@@ -225,35 +225,35 @@ class DateTimeParserService:
                     elif meridiem == 'am' and hour == 12:
                         hour = 0
                     
-                    return datetime.time(hour=hour, minute=0)
+                    return time(hour=hour, minute=0)
                 
                 elif len(groups) == 2:  # 14:30 format
                     hour = int(groups[0])
                     minute = int(groups[1])
-                    return datetime.time(hour=hour, minute=minute)
+                    return time(hour=hour, minute=minute)
         
         return None
     
     def _validate_business_hours(
         self,
-        time: datetime.time,
+        time_obj: time,
         business_hours: Dict,
-        date: datetime.date
+        date_obj: date
     ) -> Dict:
         """Check if time is within business hours"""
         try:
             start_time = datetime.strptime(business_hours['start'], '%H:%M').time()
             end_time = datetime.strptime(business_hours['end'], '%H:%M').time()
             
-            within_hours = start_time <= time <= end_time
+            within_hours = start_time <= time_obj <= end_time
             
             if not within_hours:
                 # Suggest alternatives
                 alternatives = []
                 # Suggest closest valid time
-                if time < start_time:
+                if time_obj < start_time:
                     alternatives.append(business_hours['start'])
-                if time > end_time:
+                if time_obj > end_time:
                     alternatives.append(business_hours['start'])  # Next day
                 
                 return {
@@ -269,11 +269,11 @@ class DateTimeParserService:
             logger.error(f"Error validating business hours: {e}")
             return {'within_hours': True}  # Default to allowing
     
-    def _format_user_friendly(self, date: datetime.date, time: datetime.time) -> str:
+    def _format_user_friendly(self, date_obj: date, time_obj: time) -> str:
         """Format for user readability: 'Monday, December 1st at 2:00 PM'"""
-        day_name = date.strftime('%A')
-        month_name = date.strftime('%B')
-        day = date.day
+        day_name = date_obj.strftime('%A')
+        month_name = date_obj.strftime('%B')
+        day = date_obj.day
         
         # Add ordinal suffix (1st, 2nd, 3rd, etc.)
         if 4 <= day <= 20 or 24 <= day <= 30:
@@ -281,8 +281,8 @@ class DateTimeParserService:
         else:
             suffix = ["st", "nd", "rd"][day % 10 - 1]
         
-        hour = time.hour
-        minute = time.minute
+        hour = time_obj.hour
+        minute = time_obj.minute
         meridiem = 'AM' if hour < 12 else 'PM'
         hour_12 = hour if hour <= 12 else hour - 12
         if hour_12 == 0:
