@@ -936,8 +936,6 @@ Instructions:
                 websocket, stream_sid, error_msg, stop_audio_flag
             )
 
-
-
 async def process_and_respond_outbound(
     transcript: str,
     websocket: WebSocket,
@@ -957,17 +955,14 @@ async def process_and_respond_outbound(
     rag = get_rag_service()
     
     try:
-        # Determine if we should use RAG
         rag_decision = should_use_rag(transcript, conversation_transcript, intent_analysis)
-        campaign_id = call_context.get(call_sid, {}).get('campaign_id', None)
+        
         logger.info(f"RAG Decision: {rag_decision['reason']} - Use RAG: {rag_decision['use_rag']}")
         logger.info(f"Buying Readiness: {intent_analysis.get('buying_readiness', 0)}%")
-        
-        # If direct response available, use it
+
         if not rag_decision['use_rag'] and rag_decision['direct_response']:
             logger.info(f"Using direct response: '{rag_decision['direct_response']}'")
             
-            # Save to transcript
             conversation_transcript.append({
                 'role': 'assistant',
                 'content': rag_decision['direct_response'],
@@ -975,7 +970,6 @@ async def process_and_respond_outbound(
                 'rag_used': False
             })
             
-            # Save to DB
             db.add(ConversationTurn(
                 call_sid=call_sid,
                 role="assistant",
@@ -984,13 +978,18 @@ async def process_and_respond_outbound(
             ))
             db.commit()
             
-            # Stream response directly
             await stream_elevenlabs_audio_with_playback(
                 websocket, stream_sid, rag_decision['direct_response'], stop_audio_flag
             )
             return
+
+        call_metadata = call_context.get(call_sid, {})
+        campaign_id = call_metadata.get('campaign_id', None)
+        customer_name = call_metadata.get('customer_name', 'Customer')
+        customer_phone = call_metadata.get('to_number', None)
         
-        # Prepare conversation history with AI intent context
+        logger.info(f"Call Metadata - Campaign: {campaign_id}, Customer: {customer_name}, Phone: {customer_phone}")
+
         conversation_messages = []
         for msg in conversation_transcript[-10:]:
             if msg['role'] in ['user', 'assistant']:
@@ -1002,10 +1001,11 @@ async def process_and_respond_outbound(
         buying_readiness = intent_analysis.get('buying_readiness', 0)
         objection_type = intent_analysis.get('objection_type', 'none')
         intent_type = intent_analysis.get('intent_type')
-        
-        # Add AI intent analysis to system context
-        if call_type == "outgoing":
-            persuasion_context = f"""[AI INTENT ANALYSIS]
+
+        company_name = current_agent_context.get('name', 'our company')
+        services_offered = current_agent_context.get('additional_context', {}).get('businessContext', 'our services')
+
+        persuasion_context = f"""[AI INTENT ANALYSIS]
 Customer Intent: {intent_type}
 Sentiment: {intent_analysis.get('sentiment')}
 Buying Readiness: {buying_readiness}%
@@ -1013,10 +1013,43 @@ Objection Type: {objection_type}
 Reasoning: {intent_analysis.get('reasoning')}
 Customer's Current Message: "{transcript}"
 
-[CALL METADATA]
+[CALL METADATA - USE FOR BOOKING]
 campaign_id: {campaign_id}
-call_sid: {call_sid}
-company_id: {company_id}
+customer_name: {customer_name}
+customer_phone: {customer_phone}
+
+[YOUR ROLE AND SCOPE]
+You are a sales representative for {company_name}.
+Your services: {services_offered}
+
+**GUARDRAILS - STAY ON TOPIC:**
+✅ You CAN discuss:
+- {company_name}'s services and offerings
+- Benefits, pricing, features of our services
+- Booking appointments or consultations
+- Answering questions about what we offer
+- Addressing concerns or objections about our services
+
+❌ You CANNOT discuss:
+- Competitor companies or their services
+- Unrelated topics (weather, news, sports, politics, etc.)
+- Technical support for other products
+- Personal advice outside your service scope
+- Topics unrelated to {company_name}
+
+**HANDLING OUT-OF-SCOPE QUERIES:**
+If customer asks about something outside your scope:
+1. Politely acknowledge: "That's an interesting question, but..."
+2. Redirect: "However, I'm here to help you with [our services]. Can I tell you about..."
+3. Keep it brief (1-2 sentences) and redirect back
+
+Examples:
+- Customer: "What's the weather like?" 
+  You: "I'm not sure about the weather, but I can definitely help you with our health services. Would you like to know more?"
+  
+- Customer: "Tell me about Company X"
+  You: "I'm here specifically to help with {company_name}'s services. We specialize in [services]. Can I share what makes us different?"
+
 [INTELLIGENT RESPONSE GUIDELINES]
 
 You are on a LIVE PHONE CALL. Adapt your response naturally based on what the customer is asking:
@@ -1045,26 +1078,90 @@ You are on a LIVE PHONE CALL. Adapt your response naturally based on what the cu
 - Buying Readiness 40-70% → Build value with 2-3 key benefits, generate interest
 - Buying Readiness <40% → Spark curiosity with 1-2 compelling points
 
-**BOOKING FLOW:**
-When customer is ready to book:
-1. Ask for preferred date
-2. Use check_slot_availability
-3. Ask for email
-4. Use verify_customer_email
-5. Use create_booking with confirmed details
+[SIMPLIFIED BOOKING FLOW - ONLY ASK FOR EMAIL]
+
+**CRITICAL - CUSTOMER INFO IS ALREADY AVAILABLE:**
+✅ Customer Name: {customer_name}
+✅ Customer Phone: {customer_phone}
+✅ Campaign ID: {campaign_id}
+
+**DO NOT ASK THE CUSTOMER FOR:**
+❌ Their name (you already know it's {customer_name})
+❌ Their phone number (you already have it)
+
+**ONLY ASK FOR:**
+✅ Preferred date and time
+✅ Email address
+
+**BOOKING CONVERSATION FLOW:**
+
+Step 1: Customer agrees to book
+Customer: "Yes, I'd like to book an appointment"
+You: "Perfect! What date and time works best for you?"
+
+Step 2: Check availability
+Customer: "Tomorrow at 10 AM"
+You: [Use check_slot_availability with customer_phone={customer_phone}, preferred_date="YYYY-MM-DD", preferred_time="10:00 AM", campaign_id={campaign_id}]
+
+Step 3: Ask for email ONLY
+You: "Great! That slot is available. I just need your email address to send the confirmation."
+
+Step 4: Verify email
+Customer: "john@example.com"
+You: [Use verify_customer_email with customer_email="john@example.com"]
+You: "Let me confirm - that's j-o-h-n at example dot com, correct?"
+
+Step 5: Create booking with ALL pre-filled information
+Customer: "Yes, that's correct"
+You: [Use create_booking with:
+  - customer_name: "{customer_name}" (ALWAYS use this value)
+  - customer_phone: "{customer_phone}" (ALWAYS use this value)
+  - preferred_date: "YYYY-MM-DD"
+  - preferred_time: "10:00 AM"
+  - customer_email: "john@example.com" (from customer)
+  - notes: "" (optional)
+]
+
+**CRITICAL INSTRUCTIONS FOR create_booking:**
+- ALWAYS include customer_name: "{customer_name}" in the function arguments
+- ALWAYS include customer_phone: "{customer_phone}" in the function arguments
+- DO NOT ask the customer for these - automatically use the pre-filled values
+- The customer should only provide: date, time, and email
+
+**EXAMPLE - CORRECT BOOKING FLOW:**
+Customer: "Yes, book me for tomorrow at 10 AM"
+You: "Excellent! I just need your email address for the confirmation."
+Customer: "allena@example.com"
+You: [create_booking(
+  customer_name="{customer_name}",
+  customer_phone="{customer_phone}",
+  preferred_date="2025-12-02",
+  preferred_time="10:00 AM",
+  customer_email="allena@example.com"
+)]
+You: "Perfect! I've scheduled your appointment for December 2nd at 10 AM. You'll receive confirmation at allena@example.com."
+
+**EXAMPLE - WRONG (Don't do this):**
+Customer: "I want to book"
+You: "Great! What's your name?" ❌ WRONG - You already know the name!
+You: "What's your phone number?" ❌ WRONG - You already have it!
 
 **REMEMBER:**
 - This is a phone conversation - be natural and conversational
+- Stay within your service scope - redirect off-topic questions politely
+- Only ask for EMAIL during booking - name and phone are pre-filled
+- When calling create_booking, ALWAYS include customer_name and customer_phone from the metadata above
 - Respond completely to what they asked
 - Stop when your answer is complete
 - Trust your judgment on appropriate length based on their question
 """
-            conversation_messages.insert(0, {
-                'role': 'system',
-                'content': persuasion_context
-            })
         
-        # Get RAG response with token limit
+        conversation_messages.insert(0, {
+            'role': 'system',
+            'content': persuasion_context
+        })
+        
+        # Get RAG response - OpenAI decides everything
         response_chunks = []
         async for chunk in rag.get_answer(
             company_id=company_id,
@@ -1097,7 +1194,8 @@ When customer is ready to book:
             created_at=datetime.utcnow()
         ))
         db.commit()
-
+        
+        # Stream LLM response
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, llm_response, stop_audio_flag
         )
