@@ -921,7 +921,12 @@ async def process_and_respond_outbound(
     intent_analysis: dict,
     call_type: str
 ):
-    """Process outbound call with intelligent orchestration"""
+    """
+    Process outbound call with intelligent orchestration
+    - Filters functions based on call mode (sales vs support)
+    - Prevents ticket creation during sales calls
+    - Manages booking flow with state machine
+    """
     
     rag = get_rag_service()
     
@@ -970,11 +975,15 @@ async def process_and_respond_outbound(
             )
             is_booking_mode = True
             booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_DATE, "Customer expressed interest")
+            logger.info(f"🎫 Booking session initialized for {customer_name}")
+        
+        # Determine if this is a SALES call (booking intent or high readiness)
+        is_sales_call = is_booking_mode or buying_readiness >= 50
         
         # Parse date/time if mentioned - UPDATED WITH MORE KEYWORDS
         datetime_info = None
         datetime_keywords = [
-            'now', 'immediately', 'right now', 'asap',  # Immediate scheduling
+            'now', 'immediately', 'right now', 'asap', 'as soon as possible',  # Immediate
             'tomorrow', 'today', 'tonight',  # Relative days
             'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',  # Days
             'january', 'february', 'march', 'april', 'may', 'june',  # Months
@@ -993,7 +1002,7 @@ async def process_and_respond_outbound(
                 business_hours={'start': '09:00', 'end': '18:00'}  # TODO: Get from campaign config
             )
             
-            if datetime_info['parsed_successfully'] and booking_session:
+            if datetime_info.get('parsed_successfully') and booking_session:
                 if datetime_info.get('date'):
                     booking_orchestrator.update_session_data(call_sid, 'date', datetime_info['date'])
                     logger.info(f"✓ Captured date: {datetime_info['date']}")
@@ -1004,6 +1013,20 @@ async def process_and_respond_outbound(
                     booking_orchestrator.update_session_data(call_sid, 'datetime_iso', datetime_info['datetime_iso'])
                 
                 logger.info(f"✓ Parsed: {datetime_info.get('user_friendly')}")
+        
+        # 🔥 NEW: Filter functions based on call mode
+        if is_sales_call:
+            # SALES/BOOKING MODE - Only allow booking-related functions
+            allowed_function_names = [
+                'check_slot_availability',
+                'verify_customer_email', 
+                'create_booking'
+            ]
+            logger.info(f"🎯 SALES MODE - Restricting to booking functions only")
+        else:
+            # SUPPORT MODE - Allow all functions
+            allowed_function_names = None  # No filter
+            logger.info(f"🎯 SUPPORT MODE - All functions available")
         
         # Build conversation context
         conversation_messages = []
@@ -1019,54 +1042,78 @@ async def process_and_respond_outbound(
         services = current_agent_context.get('additional_context', {}).get('businessContext', 'our services')
         
         # Get current date info for suggestions
+        from datetime import datetime, timedelta
         now = datetime.now()
         tomorrow = now + timedelta(days=1)
         day_after = now + timedelta(days=2)
         
-        if is_booking_mode:
+        if is_sales_call:
             # BOOKING MODE: Minimal prompt with datetime guidance
-            next_action = booking_orchestrator.get_next_action(call_sid)
-            collected = booking_session['collected_data']
+            next_action = booking_orchestrator.get_next_action(call_sid) if booking_session else {'prompt_hint': 'Ask for their preferred date and time'}
+            collected = booking_session['collected_data'] if booking_session else {'date': None, 'time': None, 'email': None}
             
             prompt = f"""You are helping {customer_name} book an appointment for {company_name}.
 
-**What we have:**
+**Current Status:**
 - Name: {customer_name} ✓
 - Phone: {customer_phone} ✓
-- Date: {collected['date'] or 'NEEDED'}
-- Time: {collected['time'] or 'NEEDED'}
-- Email: {collected['email'] or 'NEEDED'}
+- Date: {collected.get('date') or 'NEEDED'}
+- Time: {collected.get('time') or 'NEEDED'}
+- Email: {collected.get('email') or 'NEEDED'}
 
 **Next step:** {next_action['prompt_hint']}
 
-**IMPORTANT - If customer says "now" or "immediately":**
-The system will interpret this as the next available slot. You should then confirm:
-"I can schedule you for {datetime_info.get('user_friendly') if datetime_info else 'tomorrow at 10:00 AM'}. Does that work for you?"
+**🚨 CRITICAL RULES - MUST FOLLOW:**
+1. This is an OUTBOUND SALES CALL - your ONLY job is to book a demo
+2. NEVER create support tickets during sales calls
+3. DO NOT use create_ticket function - it's not available to you
+4. If customer is confused, CLARIFY the dates and continue booking
+5. Available functions: check_slot_availability, verify_customer_email, create_booking ONLY
+
+**Today's Date:** {now.strftime('%A, %B %d, %Y')}
+
+**If customer says "now" or "immediately":**
+The system has interpreted this. Confirm: "I can schedule you for {datetime_info.get('user_friendly') if datetime_info else 'tomorrow at 10:00 AM'}. Does that work for you?"
 
 **If customer is vague about timing:**
 Suggest specific times:
-- "Would tomorrow at 10 AM work for you?"
-- "I have availability tomorrow ({tomorrow.strftime('%B %d')}) at 10 AM or 2 PM. Which works better?"
-- "How about {day_after.strftime('%B %d')} at 10 AM?"
+- "Would tomorrow ({tomorrow.strftime('%B %d')}) at 10 AM work for you?"
+- "I have availability tomorrow at 10 AM or 2 PM. Which works better?"
+- "How about {day_after.strftime('%A, %B %d')} at 10 AM?"
 
-**Functions available:** check_slot_availability, verify_customer_email, create_booking
+**If customer is confused about dates:**
+Clarify: "Let me clarify - today is {now.strftime('%A, %B %d, %Y')}. When would be a good time for your demo?"
 
-Be natural and helpful. Keep responses brief (1-2 sentences)."""
+**Response Guidelines:**
+- Keep responses brief (1-2 sentences max)
+- Stay focused on booking the appointment
+- Be natural and conversational
+- Don't apologize excessively
+
+Remember: You are in SALES MODE. Focus on booking, not support."""
 
         else:
-            # SALES MODE: Minimal prompt, focus on conversation
+            # SALES MODE (not yet booking): Minimal prompt, focus on conversation
             prompt = f"""You are a sales representative for {company_name}.
 
-Customer: {customer_name}
-Services: {services}
-Interest Level: {buying_readiness}%
+**Customer:** {customer_name}
+**Services:** {services}
+**Interest Level:** {buying_readiness}%
 
-**Your approach:**
-- If interest 70%+: Suggest booking naturally
-- If interest 40-70%: Highlight benefits
-- If interest <40%: Create curiosity
+**Your approach based on interest:**
+- If interest 70%+: Suggest booking naturally ("Would you like to schedule a demo?")
+- If interest 40-70%: Highlight key benefits that match their needs
+- If interest <40%: Ask questions to understand their needs better
 
-Be conversational and natural (2-3 sentences max)."""
+**Today's Date:** {now.strftime('%A, %B %d, %Y')}
+
+**🚨 CRITICAL:** This is a SALES call. Do NOT create support tickets. Focus on moving toward a booking.
+
+**Response Guidelines:**
+- Be conversational and natural
+- Keep responses to 2-3 sentences
+- Listen actively to their concerns
+- Guide conversation toward booking when appropriate"""
         
         conversation_messages.insert(0, {
             'role': 'system',
@@ -1093,6 +1140,7 @@ Be conversational and natural (2-3 sentences max)."""
         else:
             logger.info("💬 Using conversation context")
             
+            # Call LLM with function calling
             response = await rag.llm_with_functions.ainvoke(conversation_messages)
             
             # Handle function calls
@@ -1101,37 +1149,64 @@ Be conversational and natural (2-3 sentences max)."""
                 function_name = function_call['name']
                 arguments = json.loads(function_call['arguments'])
                 
-                logger.info(f"📞 Function: {function_name}")
+                logger.info(f"📞 Function called: {function_name}")
                 
-                # Update booking state based on function
-                if function_name == 'check_slot_availability' and booking_session:
-                    booking_orchestrator.transition_state(call_sid, BookingState.CHECKING_AVAILABILITY, "Checking slot")
+                # 🔥 CRITICAL SAFETY CHECK - Block ticket creation during sales calls
+                if function_name == 'create_ticket' and is_sales_call:
+                    logger.warning(f"🚫 BLOCKED: Attempted to create ticket during SALES call")
+                    logger.warning(f"   Call SID: {call_sid}, Customer: {customer_name}")
+                    logger.warning(f"   Buying Readiness: {buying_readiness}%, Booking Mode: {is_booking_mode}")
+                    
+                    # Override with booking-focused response
+                    if datetime_info and datetime_info.get('parsed_successfully'):
+                        llm_response = f"Perfect! Let me check if {datetime_info.get('user_friendly')} is available for your demo."
+                    else:
+                        llm_response = f"I'd love to schedule a demo for you. What date and time works best? I have availability tomorrow at 10 AM or 2 PM."
                 
-                from services.agent_tools import execute_function
-                llm_response = await execute_function(
-                    function_name=function_name,
-                    arguments=arguments,
-                    company_id=company_id,
-                    call_sid=call_sid,
-                    campaign_id=campaign_id,
-                    user_timezone=call_metadata.get('user_timezone', 'UTC'),
-                    business_hours={'start': '09:00', 'end': '18:00'}
-                )
+                # 🔥 ADDITIONAL CHECK - Validate function is allowed in current mode
+                elif allowed_function_names and function_name not in allowed_function_names:
+                    logger.warning(f"🚫 BLOCKED: Function '{function_name}' not allowed in SALES mode")
+                    logger.warning(f"   Allowed functions: {allowed_function_names}")
+                    
+                    llm_response = f"Let me help you schedule that demo. What date and time works best for you?"
                 
-                # Update state after function execution
-                if function_name == 'check_slot_availability':
-                    if 'available' in llm_response.lower():
-                        booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
-                        booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_EMAIL, "Slot available")
-                
-                elif function_name == 'verify_customer_email':
-                    booking_orchestrator.update_session_data(call_sid, 'email_verified', True)
-                    booking_orchestrator.transition_state(call_sid, BookingState.VERIFYING_EMAIL, "Email verified")
-                
-                elif function_name == 'create_booking':
-                    booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking created")
+                else:
+                    # Function is allowed - proceed with execution
+                    logger.info(f"✅ Executing allowed function: {function_name}")
+                    
+                    # Update booking state based on function
+                    if function_name == 'check_slot_availability' and booking_session:
+                        booking_orchestrator.transition_state(call_sid, BookingState.CHECKING_AVAILABILITY, "Checking slot")
+                    
+                    from services.agent_tools import execute_function
+                    llm_response = await execute_function(
+                        function_name=function_name,
+                        arguments=arguments,
+                        company_id=company_id,
+                        call_sid=call_sid,
+                        campaign_id=campaign_id,
+                        user_timezone=call_metadata.get('user_timezone', 'UTC'),
+                        business_hours={'start': '09:00', 'end': '18:00'}
+                    )
+                    
+                    # Update state after function execution
+                    if function_name == 'check_slot_availability':
+                        if 'available' in llm_response.lower():
+                            booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
+                            booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_EMAIL, "Slot available")
+                        else:
+                            logger.info("Slot not available - staying in collecting state")
+                    
+                    elif function_name == 'verify_customer_email':
+                        booking_orchestrator.update_session_data(call_sid, 'email_verified', True)
+                        booking_orchestrator.transition_state(call_sid, BookingState.VERIFYING_EMAIL, "Email verified")
+                    
+                    elif function_name == 'create_booking':
+                        booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking created")
+                        logger.info(f"✅ Booking completed for {customer_name}")
             
             else:
+                # No function call - direct response
                 llm_response = response.content
         
         # Save to transcript
@@ -1140,10 +1215,11 @@ Be conversational and natural (2-3 sentences max)."""
             'content': llm_response,
             'timestamp': datetime.utcnow().isoformat(),
             'strategy': routing_decision['response_strategy'],
-            'booking_mode': is_booking_mode
+            'booking_mode': is_booking_mode,
+            'sales_call': is_sales_call
         })
         
-        logger.info(f"AGENT: '{llm_response[:100]}...'")
+        logger.info(f"AGENT: '{llm_response[:100]}{'...' if len(llm_response) > 100 else ''}'")
         
         # Save to DB
         db.add(ConversationTurn(
@@ -1160,11 +1236,11 @@ Be conversational and natural (2-3 sentences max)."""
         )
         
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"❌ Error in process_and_respond_outbound: {e}")
         import traceback
         logger.error(traceback.format_exc())
         
-        error_msg = "I'm having trouble. Could you please repeat?"
+        error_msg = "I apologize for the confusion. Could you please repeat that?"
         await stream_elevenlabs_audio_with_playback(
             websocket, stream_sid, error_msg, stop_audio_flag
         )
