@@ -230,11 +230,11 @@ async def handle_media_stream(websocket: WebSocket):
                         logger.info("Cancelling current audio task")
                         current_audio_task.cancel()
                         try:
-                            mark_name = await current_audio_task
-                            logger.info(f"Acknowledgment chunks sent")
-
-                            if mark_name:
-                                await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                            chunk_count = await current_audio_task
+                            logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                            
+                            # Simulate playback duration while keeping is_agent_speaking = True
+                            await simulate_playback(chunk_count, stop_audio_flag)
                         except asyncio.CancelledError:
                             pass
 
@@ -299,11 +299,11 @@ async def handle_media_stream(websocket: WebSocket):
                 )
                 
                 try:
-                    mark_name = await current_audio_task
-                    logger.info(f"Acknowledgment chunks sent")
-
-                    if mark_name:
-                        await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                    chunk_count = await current_audio_task
+                    logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                    
+                    # Simulate playback duration while keeping is_agent_speaking = True
+                    await simulate_playback(chunk_count, stop_audio_flag)
                 except asyncio.CancelledError:
                     logger.info("Urgent acknowledgment cancelled")
                 finally:
@@ -346,11 +346,11 @@ async def handle_media_stream(websocket: WebSocket):
                             )
 
                             try:
-                                mark_name = await current_audio_task
-                                logger.info(f"Acknowledgment chunks sent")
-
-                                if mark_name:
-                                    await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                                chunk_count = await current_audio_task
+                                logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                                
+                                # Simulate playback duration while keeping is_agent_speaking = True
+                                await simulate_playback(chunk_count, stop_audio_flag)
                             except asyncio.CancelledError:
                                 logger.info("Routing message cancelled")
                             finally:
@@ -480,11 +480,11 @@ async def handle_media_stream(websocket: WebSocket):
                 )
                 
                 try:
-                    mark_name = await current_audio_task
-                    logger.info(f"Acknowledgment chunks sent")
-
-                    if mark_name:
-                        await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                    chunk_count = await current_audio_task
+                    logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                    
+                    # Simulate playback duration while keeping is_agent_speaking = True
+                    await simulate_playback(chunk_count, stop_audio_flag)
                 except asyncio.CancelledError:
                     logger.info("LLM response cancelled")
                 
@@ -514,11 +514,11 @@ async def handle_media_stream(websocket: WebSocket):
                         )
                         
                         try:
-                            mark_name = await current_audio_task
-                            logger.info(f"Acknowledgment chunks sent")
-
-                            if mark_name:
-                                await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                            chunk_count = await current_audio_task
+                            logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                            
+                            # Simulate playback duration while keeping is_agent_speaking = True
+                            await simulate_playback(chunk_count, stop_audio_flag)
                         except asyncio.CancelledError:
                             pass
                             
@@ -531,11 +531,11 @@ async def handle_media_stream(websocket: WebSocket):
                         )
                         
                         try:
-                            mark_name = await current_audio_task
-                            logger.info(f"Acknowledgment chunks sent")
-
-                            if mark_name:
-                                await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                            chunk_count = await current_audio_task
+                            logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                            
+                            # Simulate playback duration while keeping is_agent_speaking = True
+                            await simulate_playback(chunk_count, stop_audio_flag)
                         except asyncio.CancelledError:
                             pass
                 else:
@@ -545,11 +545,11 @@ async def handle_media_stream(websocket: WebSocket):
                     )
                     
                     try:
-                        mark_name = await current_audio_task
-                        logger.info(f"Acknowledgment chunks sent")
-
-                        if mark_name:
-                            await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                        chunk_count = await current_audio_task
+                        logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                        
+                        # Simulate playback duration while keeping is_agent_speaking = True
+                        await simulate_playback(chunk_count, stop_audio_flag)
                     except asyncio.CancelledError:
                         pass
             
@@ -592,11 +592,11 @@ async def handle_media_stream(websocket: WebSocket):
             )
 
             try:
-                mark_name = await current_audio_task
-                logger.info(f"Acknowledgment chunks sent")
-
-                if mark_name:
-                    await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                chunk_count = await current_audio_task
+                logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                    
+                # Simulate playback duration while keeping is_agent_speaking = True
+                await simulate_playback(chunk_count, stop_audio_flag)
                 logger.info("Greeting completed - ready for customer response")
             except asyncio.CancelledError:
                 logger.info("Greeting cancelled")
@@ -643,11 +643,11 @@ async def handle_media_stream(websocket: WebSocket):
                         )
                         
                         try:
-                            mark_name = await current_audio_task
-                            logger.info(f"Acknowledgment chunks sent")
-
-                            if mark_name:
-                                await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                            chunk_count = await current_audio_task
+                            logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                            
+                            # Simulate playback duration while keeping is_agent_speaking = True
+                            await simulate_playback(chunk_count, stop_audio_flag)
                             logger.info("Greeting chunks sent, waiting for playback to complete")
                         except asyncio.CancelledError:
                             is_agent_speaking = False
@@ -779,13 +779,13 @@ async def stream_elevenlabs_audio(websocket: WebSocket, stream_sid: str, text: s
     if not stream_sid:
         logger.error("No stream_sid")
         return
-    mark_id = str(uuid.uuid4())[:8]  # Unique mark ID
     
     try:
         logger.info(f"Generating audio: '{text[:50]}...'")
         chunk_count = 0
         
         async for audio_chunk in elevenlabs_service.generate(text):
+            # Check for interruption BEFORE sending each chunk
             if stop_flag_ref.get('stop', False):
                 logger.info(f"Audio interrupted after {chunk_count} chunks")
                 # Clear Twilio's audio buffer
@@ -799,7 +799,7 @@ async def stream_elevenlabs_audio(websocket: WebSocket, stream_sid: str, text: s
                     await asyncio.sleep(0.5)
                 except Exception as clear_error:
                     logger.error(f"Failed to clear buffer: {clear_error}")
-                return
+                return 0
             
             if audio_chunk and stream_sid:
                 message = {
@@ -811,20 +811,13 @@ async def stream_elevenlabs_audio(websocket: WebSocket, stream_sid: str, text: s
                 chunk_count += 1
         
         logger.info(f"Sent {chunk_count} audio chunks to Twilio")
-
-        mark_name = f"audio_end_{mark_id}"
-        mark_message = {
-            "event": "mark",
-            "streamSid": stream_sid,
-            "mark": {"name": mark_name}
-        }
-        await websocket.send_json(mark_message)
-        logger.info(f"Sent mark: {mark_name}")
-
-        return mark_name
+        
+        # Return chunk count to calculate playback duration
+        return chunk_count
         
     except asyncio.CancelledError:
         logger.info(f"Audio task cancelled after {chunk_count} chunks")
+        # Clear buffer on cancellation
         try:
             clear_message = {
                 "event": "clear",
@@ -838,25 +831,30 @@ async def stream_elevenlabs_audio(websocket: WebSocket, stream_sid: str, text: s
         raise
     except Exception as e:
         logger.error(f"Error streaming audio: {str(e)}")
-        return None
+        return 0
 
-async def wait_for_audio_completion(mark_name: str, mark_received_event: dict, timeout: float = 30.0):
-    """Wait for a specific mark to be received, indicating audio playback completion"""
-    if not mark_name:
+async def simulate_playback(chunk_count: int, stop_flag_ref: dict):
+    """Simulate audio playback duration while checking for interruptions"""
+    if chunk_count == 0:
         return
 
-    event = asyncio.Event()
-    mark_received_event[mark_name] = event
+    playback_duration = (chunk_count * 0.02) + 0.5
     
-    try:
-        logger.info(f"Waiting for mark: {mark_name} (timeout: {timeout}s)")
-        await asyncio.wait_for(event.wait(), timeout=timeout)
-        logger.info(f"Mark received: {mark_name}")
-    except asyncio.TimeoutError:
-        logger.warning(f"Timeout waiting for mark: {mark_name}")
-    finally:
-        # Clean up
-        mark_received_event.pop(mark_name, None)
+    logger.info(f"Simulating playback: {chunk_count} chunks = {playback_duration:.1f}s")
+
+    elapsed = 0
+    check_interval = 0.1
+    
+    while elapsed < playback_duration:
+        if stop_flag_ref.get('stop', False):
+            logger.info(f"Playback interrupted at {elapsed:.1f}s")
+            return
+        
+        await asyncio.sleep(check_interval)
+        elapsed += check_interval
+    
+    logger.info(f"Playback completed: {playback_duration:.1f}s")
+
 
 @router.post("/outbound-connect")
 async def handle_outbound_connect(request: Request):
@@ -1068,11 +1066,11 @@ async def handle_outbound_stream(websocket: WebSocket):
                         logger.info("Cancelling current audio task")
                         current_audio_task.cancel()
                         try:
-                            mark_name = await current_audio_task
-                            logger.info(f"LLM response chunks sent")
-
-                            if mark_name:
-                                await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                            chunk_count = await current_audio_task
+                            logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                            
+                            # Simulate playback duration while keeping is_agent_speaking = True
+                            await simulate_playback(chunk_count, stop_audio_flag)
                         except asyncio.CancelledError:
                             pass
 
@@ -1162,11 +1160,11 @@ async def handle_outbound_stream(websocket: WebSocket):
                 )
                 
                 try:
-                    mark_name = await current_audio_task
-                    logger.info(f"Acknowledgment chunks sent")
-
-                    if mark_name:
-                        await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                    chunk_count = await current_audio_task
+                    logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                    
+                    # Simulate playback duration while keeping is_agent_speaking = True
+                    await simulate_playback(chunk_count, stop_audio_flag)
                 except asyncio.CancelledError:
                     logger.info("Audio cancelled by interruption")
                 finally:
@@ -1212,11 +1210,11 @@ async def handle_outbound_stream(websocket: WebSocket):
                                 )
                                 
                                 try:
-                                    mark_name = await current_audio_task
-                                    logger.info(f"Acknowledgment chunks sent")
-
-                                    if mark_name:
-                                        await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                                    chunk_count = await current_audio_task
+                                    logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                                    
+                                    # Simulate playback duration while keeping is_agent_speaking = True
+                                    await simulate_playback(chunk_count, stop_audio_flag)
                                 except asyncio.CancelledError:
                                     logger.info("Audio cancelled by interruption")
                                 finally:
@@ -1263,11 +1261,11 @@ async def handle_outbound_stream(websocket: WebSocket):
                     )
                     
                     try:
-                        mark_name = await current_audio_task
-                        logger.info(f"Acknowledgment chunks sent")
-
-                        if mark_name:
-                            await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                        chunk_count = await current_audio_task
+                        logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                        
+                        # Simulate playback duration while keeping is_agent_speaking = True
+                        await simulate_playback(chunk_count, stop_audio_flag)
                     except asyncio.CancelledError:
                         logger.info("Acknowledgment cancelled")
                     
@@ -1361,11 +1359,11 @@ IMPORTANT DATE RULES:
                     )
                     
                     try:
-                        mark_name = await current_audio_task
-                        logger.info(f"Acknowledgment chunks sent")
-
-                        if mark_name:
-                            await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                        chunk_count = await current_audio_task
+                        logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                        
+                        # Simulate playback duration while keeping is_agent_speaking = True
+                        await simulate_playback(chunk_count, stop_audio_flag)
                     except asyncio.CancelledError:
                         logger.info("LLM response cancelled")
                     
@@ -1380,11 +1378,11 @@ IMPORTANT DATE RULES:
                     )
                     
                     try:
-                        mark_name = await current_audio_task
-                        logger.info(f"Acknowledgment chunks sent")
-
-                        if mark_name:
-                            await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                        chunk_count = await current_audio_task
+                        logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                        
+                        # Simulate playback duration while keeping is_agent_speaking = True
+                        await simulate_playback(chunk_count, stop_audio_flag)
                     except asyncio.CancelledError:
                         pass
                 
@@ -1438,11 +1436,11 @@ IMPORTANT DATE RULES:
             )
 
             try:
-                mark_name = await current_audio_task
-                logger.info(f"Acknowledgment chunks sent")
-
-                if mark_name:
-                    await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                chunk_count = await current_audio_task
+                logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                    
+                # Simulate playback duration while keeping is_agent_speaking = True
+                await simulate_playback(chunk_count, stop_audio_flag)
                 logger.info("Greeting completed - ready for customer response")
             except asyncio.CancelledError:
                 logger.info("Greeting cancelled")
@@ -1490,11 +1488,11 @@ IMPORTANT DATE RULES:
                         )
                         
                         try:
-                            mark_name = await current_audio_task
-                            logger.info(f"Acknowledgment chunks sent")
-
-                            if mark_name:
-                                await wait_for_audio_completion(mark_name, mark_received_event, timeout=15.0)
+                            chunk_count = await current_audio_task
+                            logger.info(f"Acknowledgment: {chunk_count} chunks sent")
+                            
+                            # Simulate playback duration while keeping is_agent_speaking = True
+                            await simulate_playback(chunk_count, stop_audio_flag)
                             logger.info("Greeting chunks sent, waiting for playback to complete")
                         except asyncio.CancelledError:
                             is_agent_speaking = False
