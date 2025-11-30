@@ -11,7 +11,7 @@ from services.rag_routing_service import rag_routing_service
 from services.datetime_parser_service import datetime_parser_service
 from services.booking_orchestration_service import booking_orchestrator, BookingState
 from twilio.twiml.voice_response import VoiceResponse, Connect
-from datetime import timedelta
+from datetime import datetime, timedelta
 from config.settings import settings
 from database.config import get_db
 import logging
