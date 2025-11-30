@@ -1564,3 +1564,100 @@ async def handle_outbound_stream(websocket: WebSocket):
         db.close()
         
         logger.info(f"Cleanup complete")
+
+@router.post("/initiate-outbound-call")
+async def initiate_outbound_call(request: Request):
+    """Initiate an outbound call to a customer"""
+    try:
+        data = await request.json()
+        
+        to_number = data.get("to_number")
+        customer_name = data.get("customer_name", "")
+        company_id = data.get("company_id")
+        agent_id = data.get("agent_id")
+        campaign_id = data.get("campaign_id", "")
+        from_number = data.get("from_number", settings.twilio_phone_number)
+        
+        if not to_number or not company_id or not agent_id:
+            return {
+                "success": False,
+                "error": "Missing required fields: to_number, company_id, agent_id"
+            }
+        
+        logger.info(f"Initiating outbound call to {to_number}")
+        logger.info(f"Customer: {customer_name}, Company: {company_id}, Agent: {agent_id}")
+        logger.info(f"Campaign: {campaign_id}")
+        
+        # Build the callback URL with query parameters
+        ws_domain = settings.base_url
+        callback_url = (
+            f"{ws_domain}/api/v1/twilio-elevenlabs/outbound-connect"
+            f"?company_id={company_id}"
+            f"&agent_id={agent_id}"
+            f"&customer_name={quote(customer_name)}"
+            f"&campaign_id={campaign_id}"
+        )
+        
+        logger.info(f"Callback URL: {callback_url}")
+        
+        # Initiate the call using Twilio
+        call = twilio_client.calls.create(
+            to=to_number,
+            from_=from_number,
+            url=callback_url,
+            method='POST',
+            status_callback=f"{ws_domain}/api/v1/twilio/call-status",
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_method='POST',
+            record=False,  # We handle recording via stream
+            timeout=30,  # Ring timeout in seconds
+            machine_detection='DetectMessageEnd',  # Detect answering machines
+            machine_detection_timeout=5,
+            machine_detection_speech_threshold=2000,
+            machine_detection_speech_end_threshold=1200,
+            machine_detection_silence_timeout=5000
+        )
+        
+        logger.info(f"Call initiated successfully: {call.sid}")
+        
+        # Store initial call record in database
+        db = SessionLocal()
+        try:
+            new_call = Call(
+                call_sid=call.sid,
+                company_id=company_id,
+                from_number=from_number,
+                to_number=to_number,
+                call_type=CallType.outgoing,
+                status='initiated',
+                created_at=datetime.utcnow()
+            )
+            db.add(new_call)
+            db.commit()
+            logger.info(f"Call record created in database: {call.sid}")
+        except Exception as db_error:
+            logger.error(f"Failed to create call record: {db_error}")
+            db.rollback()
+        finally:
+            db.close()
+        
+        return {
+            "success": True,
+            "call_sid": call.sid,
+            "to_number": to_number,
+            "from_number": from_number,
+            "customer_name": customer_name,
+            "campaign_id": campaign_id,
+            "status": call.status
+        }
+        
+    except Exception as e:
+        logger.error(f"Error initiating outbound call: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
