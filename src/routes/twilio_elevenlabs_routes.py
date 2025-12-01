@@ -161,6 +161,7 @@ async def handle_media_stream(websocket: WebSocket):
     logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     
     master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
+    agent_name = master_agent["name"]
     current_agent_context = master_agent
     
     call_metadata = {
@@ -415,7 +416,7 @@ async def handle_media_stream(websocket: WebSocket):
             stream_sid = first_message_data.get("streamSid")
             logger.info(f"STREAM STARTED: {stream_sid}")
             
-            greeting = prompt_template_service.generate_greeting(master_agent, company_id)
+            greeting = prompt_template_service.generate_greeting(master_agent, company_id, name)
             logger.info(f"Sending greeting: '{greeting}'")
             
             is_agent_speaking = True
@@ -454,7 +455,7 @@ async def handle_media_stream(websocket: WebSocket):
                         stream_sid = data.get("streamSid")
                         logger.info(f"STREAM STARTED: {stream_sid}")
                         
-                        greeting = prompt_template_service.generate_greeting(master_agent, company_id)
+                        greeting = prompt_template_service.generate_greeting(master_agent, company_id, name)
                         logger.info(f"Sending greeting: '{greeting}'")
                         
                         is_agent_speaking = True

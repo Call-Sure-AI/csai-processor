@@ -10,60 +10,7 @@ logger = logging.getLogger(__name__)
 class PromptTemplateService:
     def __init__(self):
         pass
-    
-    # ========== REQUIREMENT i) Sales-Focused Outbound Greeting ==========
-    
-    def generate_outbound_sales_greeting(
-        self,
-        agent: Dict,
-        customer_name: str = "",
-        campaign_id: str = ""
-    ) -> str:
-        """
-        Generate intelligent sales greeting that asks about specific services
-        based on agent's businessContext and prompt
-        """
-        try:
-            additional_context = agent.get('additional_context', {})
-            prompt = agent.get('prompt', '')
-            
-            # Extract details
-            ai_name = self._extract_name_from_prompt(prompt)
-            company_name = self._extract_company_name(agent.get('name', ''), additional_context.get('businessContext', ''))
-            
-            # Extract services from businessContext
-            services = self._extract_services_from_context(additional_context.get('businessContext', ''))
-            
-            # Extract target audience
-            target_audience = self._extract_target_audience(additional_context.get('businessContext', ''))
-            
-            # Build service-focused greeting
-            if services:
-                service_pitch = self._build_service_pitch(services, target_audience)
-            else:
-                service_pitch = "our services that could benefit you"
-            
-            # Generate greeting
-            if customer_name:
-                greeting = (
-                    f"Hello {customer_name}! This is {ai_name} calling from {company_name}. "
-                    f"I'm reaching out because {service_pitch}. "
-                    f"Would you be interested in learning more about this?"
-                )
-            else:
-                greeting = (
-                    f"Hello! This is {ai_name} from {company_name}. "
-                    f"We specialize in {service_pitch}. "
-                    f"Can I share how we can help you?"
-                )
-            
-            logger.info(f"Generated sales greeting for {ai_name} from {company_name}")
-            return greeting
-            
-        except Exception as e:
-            logger.error(f"Error generating sales greeting: {str(e)}")
-            return f"Hello {customer_name if customer_name else ''}! This is calling from your service provider. How may I help you today?"
-    
+        
     def _extract_services_from_context(self, business_context: str) -> List[str]:
         """Extract service offerings from businessContext"""
         services = []
@@ -429,7 +376,7 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
         """Extract company name"""
         return company_service.get_company_name_by_id(company_id)
     
-    def generate_greeting(self, agent: Dict, company_id) -> str:
+    def generate_greeting(self, agent: Dict, company_id: str, name: str) -> str:
         """Generate greeting for incoming calls"""
         try:
             additional_context = agent.get('additional_context', {})
@@ -437,7 +384,7 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
                 company_id
             )
             
-            return f"Hello! Thank you for calling {company_name}'s Customer Support. How may I help you today?"
+            return f"Hello! This is {name} from {company_name}'s Customer Support. How may I help you today?"
         except:
             return "Hello! How may I help you today?"
 
