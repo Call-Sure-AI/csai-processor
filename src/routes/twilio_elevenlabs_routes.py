@@ -1337,8 +1337,6 @@ async def handle_outbound_connect(request: Request):
         response.say("An error occurred.", voice="Polly.Joanna")
         return Response(content=str(response), media_type="application/xml")
 
-
-@router.websocket("/outbound-stream")
 @router.websocket("/outbound-stream")
 async def handle_outbound_stream(websocket: WebSocket):
     """
@@ -1374,42 +1372,56 @@ async def handle_outbound_stream(websocket: WebSocket):
     
     try:
         # ============================================
-        # STEP 1: PARALLEL INITIALIZATION (non-blocking)
+        # STEP 1: GET CALL SID AND PARAMETERS
         # ============================================
-        logger.info("🚀 Starting parallel initialization...")
-        init_start = time.time()
+        logger.info("🚀 Starting initialization...")
         
-        # Get first message to extract call parameters
-        first_message = await websocket.receive_text()
-        first_message_data = json.loads(first_message)
+        # Try to get call_sid from query params first
+        call_sid = websocket.query_params.get("call_sid")
         
-        # Extract call parameters
-        if first_message_data.get("event") == "start":
-            call_sid = first_message_data["start"]["callSid"]
-            stream_sid = first_message_data.get("streamSid")
-            custom_params = first_message_data["start"].get("customParameters", {})
-            company_id = custom_params.get("company_id")
-            agent_id = custom_params.get("agent_id")
-            customer_name = custom_params.get("customer_name", "there")
-            campaign_id = custom_params.get("campaign_id", "UNKNOWN")
+        if not call_sid:
+            # If not in query params, get from first message
+            logger.info("No call_sid in query, waiting for 'start' event...")
+            first_message = await websocket.receive_text()
+            first_message_data = json.loads(first_message)
+            
+            if first_message_data.get("event") == "start":
+                call_sid = first_message_data["start"]["callSid"]
+                stream_sid = first_message_data.get("streamSid")
+        else:
+            # Get first message to potentially extract stream_sid
+            first_message = await websocket.receive_text()
+            first_message_data = json.loads(first_message)
+            
+            if first_message_data.get("event") == "start":
+                stream_sid = first_message_data.get("streamSid")
         
-        if not all([call_sid, company_id, agent_id]):
-            logger.error("❌ Missing required parameters")
+        if not call_sid:
+            logger.error("❌ Could not obtain call_sid")
             await websocket.close()
             return
         
+        logger.info(f"📞 Call SID: {call_sid}")
+        
         # Get context from stored data
         context = call_context.get(call_sid, {})
-        if not company_id:
-            company_id = context.get("company_id")
-        if not agent_id:
-            agent_id = context.get("agent_id")
-        if not customer_name:
-            customer_name = context.get("customer_name", "there")
-        if not campaign_id:
-            campaign_id = context.get("campaign_id", "UNKNOWN")
-        
+        company_id = context.get("company_id")
+        agent_id = context.get("agent_id")
+        customer_name = context.get("customer_name", "there")
+        campaign_id = context.get("campaign_id", "UNKNOWN")
         call_type = context.get("call_type", "outgoing")
+        
+        if not all([company_id, agent_id]):
+            logger.error(f"❌ Missing required parameters - company_id: {company_id}, agent_id: {agent_id}")
+            await websocket.close()
+            return
+        
+        logger.info(f"✅ Parameters loaded - Company: {company_id}, Agent: {agent_id}, Customer: {customer_name}")
+        
+        # ============================================
+        # STEP 2: PARALLEL INITIALIZATION
+        # ============================================
+        init_start = time.time()
         
         # Parallel tasks for initialization
         async def init_agent():
@@ -1478,6 +1490,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         
         # Initialize database session
         db = SessionLocal()
+        deepgram_service = DeepgramWebSocketService()
         
         call_state = {
             "first_interaction": True,
@@ -1485,7 +1498,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         }
         
         # ============================================
-        # STEP 2: DEFINE CALLBACKS
+        # STEP 3: DEFINE CALLBACKS
         # ============================================
         
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
@@ -1728,7 +1741,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 current_audio_task_ref['task'] = None
         
         # ============================================
-        # STEP 3: INITIALIZE DEEPGRAM (non-blocking)
+        # STEP 4: INITIALIZE DEEPGRAM (non-blocking)
         # ============================================
         session_id = f"deepgram_{call_sid}"
         logger.info(f"🎙️ Initializing Deepgram in background...")
@@ -1743,7 +1756,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         )
         
         # ============================================
-        # STEP 4: GREETING FLOW
+        # STEP 5: GREETING FLOW
         # ============================================
         
         # Check if we already have stream_sid from first message
@@ -1790,7 +1803,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             await asyncio.sleep(0.5)
         
         # ============================================
-        # STEP 5: MESSAGE LOOP
+        # STEP 6: MESSAGE LOOP
         # ============================================
         logger.info("📡 Entering message loop...")
         
