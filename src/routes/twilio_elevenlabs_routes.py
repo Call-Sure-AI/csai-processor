@@ -201,6 +201,62 @@ async def handle_media_stream(websocket: WebSocket):
     }
     
     try:
+        # ✅ NEW: Instant interruption callback for interim transcripts
+        async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
+            """🚨 INSTANT interruption detection - fires on interim transcripts (<200ms)"""
+            nonlocal is_agent_speaking
+            nonlocal stop_audio_flag
+            nonlocal current_audio_task
+            nonlocal current_processing_task
+            
+            # Only check if agent is speaking
+            if not is_agent_speaking:
+                return
+            
+            # Check word count (lowered to 2 for faster detection)
+            word_count = len(transcript.split())
+            if word_count >= 2:  # ✅ Lower threshold for instant detection
+                logger.warning(f"🚨 INSTANT INTERRUPTION: '{transcript}' (confidence: {confidence:.2f})")
+                
+                # Set stop flag immediately
+                stop_audio_flag['stop'] = True
+                
+                # Cancel audio playback
+                if current_audio_task and not current_audio_task.done():
+                    logger.info("⚡ Cancelling audio instantly...")
+                    current_audio_task.cancel()
+                    try:
+                        await current_audio_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Cancel processing
+                if current_processing_task and not current_processing_task.done():
+                    logger.info("⚡ Cancelling processing...")
+                    current_processing_task.cancel()
+                    try:
+                        await current_processing_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Mark agent as not speaking
+                is_agent_speaking = False
+                
+                # Send clear command to Twilio
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    logger.info("✓ Sent clear command to Twilio")
+                except Exception as e:
+                    logger.error(f"Error sending clear: {e}")
+                
+                # Wait briefly for buffer to clear
+                await asyncio.sleep(0.5)
+                
+                # Reset flag
+                stop_audio_flag['stop'] = False
+                logger.info("✓ Ready for customer input")
+        
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
             nonlocal is_agent_speaking
@@ -219,46 +275,7 @@ async def handle_media_stream(websocket: WebSocket):
                     logger.debug(f"Ignoring early transcript (echo): '{transcript}' at {elapsed:.1f}s")
                     return
             
-            logger.info(f"📝 Transcript: '{transcript}' | Agent speaking: {is_agent_speaking}")
-            
-            if is_agent_speaking:
-                word_count = len(transcript.split())
-                if word_count >= 3:
-                    logger.warning(f"⚠️ REAL INTERRUPTION: '{transcript}'")
-                    
-                    # Set stop flag
-                    stop_audio_flag['stop'] = True
-                    
-                    # Cancel BOTH audio playback AND processing tasks
-                    if current_audio_task and not current_audio_task.done():
-                        logger.info("Cancelling audio playback...")
-                        current_audio_task.cancel()
-                        try:
-                            await current_audio_task
-                        except asyncio.CancelledError:
-                            pass
-                    
-                    if current_processing_task and not current_processing_task.done():
-                        logger.info("Cancelling RAG processing...")
-                        current_processing_task.cancel()
-                        try:
-                            await current_processing_task
-                        except asyncio.CancelledError:
-                            pass
-                    
-                    # Mark agent as not speaking
-                    is_agent_speaking = False
-                    
-                    # Wait for buffer clear
-                    logger.info("Waiting for Twilio to clear...")
-                    await asyncio.sleep(1.0)
-                    
-                    # Reset flag
-                    stop_audio_flag['stop'] = False
-                    logger.info("✓ Ready for new input")
-                else:
-                    logger.debug(f"Ignoring short utterance: '{transcript}' ({word_count} words)")
-                    return
+            logger.info(f"Transcript: '{transcript}' | Agent speaking: {is_agent_speaking}")
             
             logger.info(f"USER SAID: '{transcript}'")
             
@@ -396,13 +413,14 @@ async def handle_media_stream(websocket: WebSocket):
                 current_audio_task = None
                 current_processing_task = None
         
-        # Initialize Deepgram
+        # Initialize Deepgram with BOTH callbacks
         session_id = f"deepgram_{call_sid}"
         logger.info(f"Initializing Deepgram...")
         
         deepgram_connected = await deepgram_service.initialize_session(
             session_id=session_id,
-            callback=on_deepgram_transcript
+            callback=on_deepgram_transcript,
+            interruption_callback=on_interim_transcript  # ✅ NEW
         )
         
         if not deepgram_connected:
@@ -782,8 +800,8 @@ You are continuing an active conversation. Use the conversation history to respo
                     company_id=company_id,
                     call_sid=call_sid or "unknown",
                     campaign_id=None,
-                user_timezone=call_metadata.get('user_timezone', 'UTC'),  # NEW
-                business_hours={'start': '09:00', 'end': '18:00'}
+                    user_timezone=call_metadata.get('user_timezone', 'UTC'),
+                    business_hours={'start': '09:00', 'end': '18:00'}
                 )
             else:
                 llm_response = response.content
@@ -925,9 +943,7 @@ async def process_and_respond_outbound(
     call_type: str
 ):
     """
-    Outbound call processing with SLOT MANAGER INTEGRATION.
-    
-    Fetches available slots from backend and injects into prompt.
+    Outbound call processing with SLOT MANAGER INTEGRATION + OPTIMIZED LATENCY.
     """
     
     rag = get_rag_service()
@@ -971,12 +987,52 @@ async def process_and_respond_outbound(
         
         is_sales_call = is_booking_mode or buying_readiness >= 50
         
-        # AI-powered datetime parsing (always run - no keyword pre-check)
-        datetime_info = await datetime_parser_service.parse_user_datetime(
-            user_input=transcript,
-            user_timezone=call_metadata.get('user_timezone', 'UTC'),
-            business_hours={'start': '09:00', 'end': '18:00'}
+        now = datetime.now()
+        
+        # ✅ OPTIMIZATION: Run datetime parsing and slot fetching in PARALLEL
+        async def fetch_datetime_info():
+            return await datetime_parser_service.parse_user_datetime(
+                user_input=transcript,
+                user_timezone=call_metadata.get('user_timezone', 'UTC'),
+                business_hours={'start': '09:00', 'end': '18:00'}
+            )
+        
+        async def fetch_slots():
+            if not (is_booking_mode and campaign_id):
+                return ""
+            try:
+                logger.info(f"🔍 Fetching available slots for campaign {campaign_id}...")
+                slot_manager = SlotManagerService()
+                slots_data = await slot_manager.get_available_slots(
+                    campaign_id=campaign_id,
+                    start_date=now,
+                    end_date=now + timedelta(days=7),
+                    count=5
+                )
+                logger.info(f"📅 Slots fetched: {slots_data.get('count', 0)} slots")
+                logger.info(f"   Source: {slots_data.get('source', 'unknown')}")
+                formatted = slot_manager.format_slots_for_prompt(slots_data)
+                logger.info(f"   Formatted slots:\n{formatted}")
+                return formatted
+            except Exception as e:
+                logger.error(f"Slot fetch error: {e}")
+                tomorrow = now + timedelta(days=1)
+                return f"Suggest: tomorrow ({tomorrow.strftime('%A, %B %d')}) at 10 AM, 2 PM, or 4 PM"
+        
+        # ✅ Run both in parallel (HUGE latency reduction)
+        datetime_info, available_slots_text = await asyncio.gather(
+            fetch_datetime_info(),
+            fetch_slots(),
+            return_exceptions=True
         )
+        
+        # Handle exceptions
+        if isinstance(datetime_info, Exception):
+            logger.error(f"Datetime parsing failed: {datetime_info}")
+            datetime_info = {}
+        if isinstance(available_slots_text, Exception):
+            logger.error(f"Slot fetching failed: {available_slots_text}")
+            available_slots_text = ""
         
         # Update booking session if datetime found
         if datetime_info.get('parsed_successfully') and booking_session:
@@ -1010,41 +1066,6 @@ async def process_and_respond_outbound(
         
         # Get context
         company_name = company_service.get_company_name_by_id(company_id)
-        
-        now = datetime.now()
-        tomorrow = now + timedelta(days=1)
-        day_after = now + timedelta(days=2)
-        
-        # 🆕 FETCH AVAILABLE SLOTS FROM BACKEND (if in booking mode)
-        available_slots_text = ""
-        if is_booking_mode and campaign_id:
-            try:
-                logger.info(f"🔍 Fetching available slots for campaign {campaign_id}...")
-                
-                slot_manager = SlotManagerService()
-                slots_data = await slot_manager.get_available_slots(
-                    campaign_id=campaign_id,
-                    start_date=now,
-                    end_date=now + timedelta(days=7),  # Next 7 days
-                    count=5
-                )
-                
-                logger.info(f"📅 Slots fetched: {slots_data.get('count', 0)} slots")
-                logger.info(f"   Source: {slots_data.get('source', 'unknown')}")
-                
-                # Format slots for prompt
-                available_slots_text = slot_manager.format_slots_for_prompt(slots_data)
-                logger.info(f"   Formatted slots:\n{available_slots_text}")
-                
-            except Exception as slot_error:
-                logger.error(f"⚠️ Error fetching slots: {slot_error}")
-                # Fallback to generic suggestions
-                available_slots_text = (
-                    "Suggested times:\n"
-                    f"1. Tomorrow ({tomorrow.strftime('%A, %B %d')}) at 10 AM\n"
-                    f"2. Tomorrow at 2 PM\n"
-                    f"3. {day_after.strftime('%A, %B %d')} at 10 AM"
-                )
         
         # Choose prompt
         if is_sales_call:
@@ -1156,7 +1177,7 @@ Be conversational."""
                 
                 logger.info(f"✓ Function result: {llm_response[:100]}...")
                 
-                # Update state after execution
+                # ✅ FIX: Update state after execution
                 if function_name == 'check_slot_availability':
                     if 'available' in llm_response.lower() and 'not available' not in llm_response.lower():
                         booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
@@ -1169,8 +1190,14 @@ Be conversational."""
                     booking_orchestrator.transition_state(call_sid, BookingState.CONFIRMING_BOOKING, "Email verified, ready to book")
                 
                 elif function_name == 'create_booking':
-                    booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking complete!")
-                    logger.info(f"✅ BOOKING COMPLETE for {customer_name}")
+                    # ✅ FIX: Only transition if booking succeeded
+                    if 'booking id' in llm_response.lower() or 'scheduled' in llm_response.lower():
+                        booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking complete!")
+                        logger.info(f"✅ BOOKING COMPLETE for {customer_name}")
+                    else:
+                        # Booking failed - reset to collecting date
+                        logger.warning(f"⚠️ Booking failed: {llm_response[:100]}")
+                        booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_DATE, "Booking failed, restarting")
         
         else:
             # No function call - direct response
@@ -1298,7 +1325,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     current_processing_task = None
     greeting_sent = False
     greeting_start_time = None
-    rejection_count = 0  # Track rejections
+    rejection_count = 0
     
     logger.info(f"Query params: {dict(websocket.query_params)}")
     
@@ -1406,6 +1433,62 @@ async def handle_outbound_stream(websocket: WebSocket):
     }
     
     try:
+        # ✅ NEW: Instant interruption callback for interim transcripts
+        async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
+            """🚨 INSTANT interruption detection - fires on interim transcripts (<200ms)"""
+            nonlocal is_agent_speaking
+            nonlocal stop_audio_flag
+            nonlocal current_audio_task
+            nonlocal current_processing_task
+            
+            # Only check if agent is speaking
+            if not is_agent_speaking:
+                return
+            
+            # Check word count (lowered to 2 for faster detection)
+            word_count = len(transcript.split())
+            if word_count >= 2:  # ✅ Lower threshold for instant detection
+                logger.warning(f"🚨 INSTANT INTERRUPTION: '{transcript}' (confidence: {confidence:.2f})")
+                
+                # Set stop flag immediately
+                stop_audio_flag['stop'] = True
+                
+                # Cancel audio playback
+                if current_audio_task and not current_audio_task.done():
+                    logger.info("⚡ Cancelling audio instantly...")
+                    current_audio_task.cancel()
+                    try:
+                        await current_audio_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Cancel processing
+                if current_processing_task and not current_processing_task.done():
+                    logger.info("⚡ Cancelling processing...")
+                    current_processing_task.cancel()
+                    try:
+                        await current_processing_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Mark agent as not speaking
+                is_agent_speaking = False
+                
+                # Send clear command to Twilio
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    logger.info("✓ Sent clear command to Twilio")
+                except Exception as e:
+                    logger.error(f"Error sending clear: {e}")
+                
+                # Wait briefly for buffer to clear
+                await asyncio.sleep(0.5)
+                
+                # Reset flag
+                stop_audio_flag['stop'] = False
+                logger.info("✓ Ready for customer input")
+        
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
             nonlocal is_agent_speaking
@@ -1426,43 +1509,6 @@ async def handle_outbound_stream(websocket: WebSocket):
                     return
             
             logger.info(f"Transcript: '{transcript}' | Agent speaking: {is_agent_speaking}")
-            
-            if is_agent_speaking:
-                word_count = len(transcript.split())
-                if word_count >= 3:
-                    logger.warning(f"REAL INTERRUPTION: '{transcript}'")
-
-                    stop_audio_flag['stop'] = True
-
-                    if current_audio_task and not current_audio_task.done():
-                        logger.info("Cancelling audio playback...")
-                        current_audio_task.cancel()
-                        try:
-                            await current_audio_task
-                        except asyncio.CancelledError:
-                            pass
-                    
-                    if current_processing_task and not current_processing_task.done():
-                        logger.info("Cancelling RAG processing...")
-                        current_processing_task.cancel()
-                        try:
-                            await current_processing_task
-                        except asyncio.CancelledError:
-                            pass
-                    
-                    # Mark agent as not speaking
-                    is_agent_speaking = False
-                    
-                    # Wait for buffer clear
-                    logger.info("Waiting for Twilio to clear...")
-                    await asyncio.sleep(1.0)
-                    
-                    # Reset flag
-                    stop_audio_flag['stop'] = False
-                    logger.info("✓ Ready for new input")
-                else:
-                    logger.debug(f"Ignoring short utterance: '{transcript}' ({word_count} words)")
-                    return
             
             logger.info(f"CUSTOMER SAID: '{transcript}'")
             
@@ -1497,9 +1543,6 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             intent_type = intent_analysis.get('intent_type')
             buying_readiness = intent_analysis.get('buying_readiness', 0)
-            should_book = intent_analysis.get('should_book', False)
-            should_persuade = intent_analysis.get('should_persuade', True)
-            should_end_call = intent_analysis.get('should_end_call', False)
             
             logger.info(f"PERSUASION MODE (Intent: {intent_type}, Readiness: {buying_readiness}%)")
 
@@ -1549,7 +1592,6 @@ async def handle_outbound_stream(websocket: WebSocket):
                         is_agent_speaking = False
                         current_audio_task = None
                     
-                    # End the call
                     logger.info("Ending call after 2 rejections")
                     return
             else:
@@ -1644,7 +1686,8 @@ async def handle_outbound_stream(websocket: WebSocket):
         deepgram_start = datetime.utcnow()
         deepgram_connected = await deepgram_service.initialize_session(
             session_id=session_id,
-            callback=on_deepgram_transcript
+            callback=on_deepgram_transcript,
+            interruption_callback=on_interim_transcript  # ✅ NEW
         )
         deepgram_duration = (datetime.utcnow() - deepgram_start).total_seconds()
         
@@ -1735,7 +1778,6 @@ async def handle_outbound_stream(websocket: WebSocket):
                         await asyncio.sleep(0.5)
                 
                 elif event == "media":
-                    # Process user audio for interruption detection
                     payload = data.get("media", {}).get("payload")
                     if payload:
                         audio = await deepgram_service.convert_twilio_audio(payload, session_id)
@@ -1884,9 +1926,9 @@ async def initiate_outbound_call(request: Request):
             status_callback=f"{ws_domain}/api/v1/twilio/call-status",
             status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
             status_callback_method='POST',
-            record=False,  # We handle recording via stream
-            timeout=30,  # Ring timeout in seconds
-            machine_detection='DetectMessageEnd',  # Detect answering machines
+            record=False,
+            timeout=30,
+            machine_detection='DetectMessageEnd',
             machine_detection_timeout=5,
             machine_detection_speech_threshold=2000,
             machine_detection_speech_end_threshold=1200,
@@ -1935,4 +1977,3 @@ async def initiate_outbound_call(request: Request):
             "success": False,
             "error": str(e)
         }
-

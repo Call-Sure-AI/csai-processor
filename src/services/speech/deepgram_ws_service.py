@@ -138,7 +138,7 @@ class DeepgramWebSocketService:
                 channels=1,
                 punctuate=True,
                 smart_format=True,
-                interim_results=True,  # ✅ CHANGED: Enable interim results for instant interruption
+                interim_results=True,  # ✅ ENABLED: For instant interruption
                 endpointing=300,
             )
             
