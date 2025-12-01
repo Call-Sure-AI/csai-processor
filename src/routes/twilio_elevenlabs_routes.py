@@ -1339,124 +1339,157 @@ async def handle_outbound_connect(request: Request):
 
 
 @router.websocket("/outbound-stream")
+@router.websocket("/outbound-stream")
 async def handle_outbound_stream(websocket: WebSocket):
-    """Outbound call streaming - FULLY OPTIMIZED with instant greeting and working interruption"""
-    try:
-        await websocket.accept()
-        logger.info("✅ WebSocket ACCEPTED")
-    except Exception as e:
-        logger.error(f"Failed to accept WebSocket: {str(e)}")
-        return
+    """
+    Handle outbound call WebSocket stream with ElevenLabs TTS and Deepgram STT
+    """
+    await websocket.accept()
+    logger.info("✅ WebSocket ACCEPTED")
+
+    call_sid = None
+    stream_sid = None
+    company_id = None
+    agent_id = None
+    customer_name = None
+    campaign_id = None
+    session_id = None
     
-    conversation_transcript = []
-    call_sid = websocket.query_params.get("call_sid")
-    first_message_data = None
-    is_agent_speaking = False
-    stop_audio_flag = {'stop': False}
+    # Audio management
     current_audio_task = None
-    current_processing_task = None
-    greeting_sent = False
-    greeting_start_time = None
-    rejection_count = 0
-    
-    # ✅ NEW: Task reference and audio timing tracker
     current_audio_task_ref = {'task': None}
+    stop_audio_flag = {'stop': False}
     audio_timing_ref = {'speaking': False, 'expected_end': 0}
     
-    if not call_sid:
-        try:
-            for attempt in range(3):
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-                data = json.loads(message)
-                event_type = data.get("event")
-                
-                if event_type == "connected":
-                    continue
-                elif event_type == "start":
-                    call_sid = data.get("start", {}).get("callSid")
-                    first_message_data = data
-                    break
-        except asyncio.TimeoutError:
-            await websocket.close(code=1008)
-            return
-    
-    if not call_sid:
-        await websocket.close(code=1008)
-        return
-    
-    # Get context
-    context = call_context.get(call_sid, {})
-    company_id = context.get("company_id")
-    master_agent_id = context.get("agent_id")
-    customer_name = context.get("customer_name", "")
-    campaign_id = context.get("campaign_id", "")
-    call_type = context.get("call_type", "outgoing")
-    
-    # ✅ PARALLEL INITIALIZATION
-    logger.info(f"🚀 Starting parallel initialization...")
-    start_time = datetime.utcnow()
-    
-    async def fetch_agent_and_company():
-        """Fetch agent config and company name in parallel"""
-        agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
-        company = company_service.get_company_name_by_id(company_id)
-        return agent, company
-    
-    master_agent, company_name = await fetch_agent_and_company()
-    
-    init_duration = (datetime.utcnow() - start_time).total_seconds()
-    logger.info(f"⚡ Initialization complete in {init_duration:.2f}s")
-    
-    if not master_agent:
-        logger.error(f"Failed to fetch master agent")
-        await websocket.close(code=1008)
-        return
-    
-    agent_name = master_agent["name"]
-    current_agent_context = master_agent
-    
-    call_metadata = {
-        'start_time': datetime.utcnow(),
-        'from_number': from_number_global,
-        'to_number': to_number_global,
-        'company_id': company_id,
-        'call_type': call_type
-    }
-    
-    # Pre-generate greeting for speed
-    additional_context = master_agent.get('additional_context', {})
-    business_context = additional_context.get('businessContext', 'our services')
-    
-    greeting = (
-        f"Hello {customer_name}! This is {agent_name} calling from {company_name}. "
-        f"I'm reaching out because we offer {business_context}. "
-        f"Would you be interested in learning more?"
-    )
-    
-    logger.info(f"💬 Greeting pre-generated: '{greeting[:50]}...'")
-    
-    # Load agents
-    available_agents = await agent_config_service.get_company_agents(company_id)
-    specialized_agents = [
-        a for a in available_agents
-        if a['agent_id'] != master_agent_id
-    ]
-    
-    # Initialize services
-    db = SessionLocal()
-    deepgram_service = DeepgramWebSocketService()
-    rag = get_rag_service()
-    stream_sid = None
-    
-    call_state = {
-        "first_interaction": True,
-        "interaction_count": 0
-    }
+    # Conversation state
+    conversation_history = []
+    conversation_start = None
+    greeting_sent = False
+    greeting = None
+    greeting_start_time = None
+    company_name = None
+    agent_name = None
+    rejection_count = 0
+    current_processing_task = None
     
     try:
-        # ✅ IMPROVED INTERRUPTION CALLBACK WITH TIMING CHECK
+        # ============================================
+        # STEP 1: PARALLEL INITIALIZATION (non-blocking)
+        # ============================================
+        logger.info("🚀 Starting parallel initialization...")
+        init_start = time.time()
+        
+        # Get first message to extract call parameters
+        first_message = await websocket.receive_text()
+        first_message_data = json.loads(first_message)
+        
+        # Extract call parameters
+        if first_message_data.get("event") == "start":
+            call_sid = first_message_data["start"]["callSid"]
+            stream_sid = first_message_data.get("streamSid")
+            custom_params = first_message_data["start"].get("customParameters", {})
+            company_id = custom_params.get("company_id")
+            agent_id = custom_params.get("agent_id")
+            customer_name = custom_params.get("customer_name", "there")
+            campaign_id = custom_params.get("campaign_id", "UNKNOWN")
+        
+        if not all([call_sid, company_id, agent_id]):
+            logger.error("❌ Missing required parameters")
+            await websocket.close()
+            return
+        
+        # Get context from stored data
+        context = call_context.get(call_sid, {})
+        if not company_id:
+            company_id = context.get("company_id")
+        if not agent_id:
+            agent_id = context.get("agent_id")
+        if not customer_name:
+            customer_name = context.get("customer_name", "there")
+        if not campaign_id:
+            campaign_id = context.get("campaign_id", "UNKNOWN")
+        
+        call_type = context.get("call_type", "outgoing")
+        
+        # Parallel tasks for initialization
+        async def init_agent():
+            """Load agent configuration"""
+            try:
+                agent_data = await agent_config_service.get_master_agent(company_id, agent_id)
+                if not agent_data:
+                    raise ValueError(f"Agent {agent_id} not found")
+                return agent_data
+            except Exception as e:
+                logger.error(f"❌ Failed to load agent: {e}")
+                raise
+        
+        async def init_company():
+            """Load company information"""
+            try:
+                comp_name = company_service.get_company_name_by_id(company_id)
+                if not comp_name:
+                    raise ValueError(f"Company {company_id} not found")
+                return comp_name
+            except Exception as e:
+                logger.error(f"❌ Failed to load company: {e}")
+                raise
+        
+        # Run initialization in parallel
+        master_agent, comp_name = await asyncio.gather(
+            init_agent(),
+            init_company()
+        )
+        
+        agent_name = master_agent.get("name", "AI Assistant")
+        company_name = comp_name
+        current_agent_context = master_agent
+        
+        # Pre-generate greeting
+        additional_context = master_agent.get('additional_context', {})
+        business_context = additional_context.get('businessContext', 'our services')
+        
+        greeting = (
+            f"Hello {customer_name}! This is {agent_name} calling from {company_name}. "
+            f"I'm reaching out because we offer {business_context}. "
+            f"Would you be interested in learning more?"
+        )
+        
+        init_duration = time.time() - init_start
+        logger.info(f"⚡ Initialization complete in {init_duration:.2f}s")
+        logger.info(f"💬 Greeting pre-generated: '{greeting[:50]}...'")
+        
+        # Set up call metadata
+        call_metadata = {
+            'start_time': datetime.utcnow(),
+            'from_number': from_number_global,
+            'to_number': to_number_global,
+            'company_id': company_id,
+            'call_type': call_type
+        }
+        
+        conversation_start = datetime.utcnow()
+        
+        # Load available agents
+        available_agents = await agent_config_service.get_company_agents(company_id)
+        specialized_agents = [
+            a for a in available_agents
+            if a['agent_id'] != agent_id
+        ]
+        
+        # Initialize database session
+        db = SessionLocal()
+        
+        call_state = {
+            "first_interaction": True,
+            "interaction_count": 0
+        }
+        
+        # ============================================
+        # STEP 2: DEFINE CALLBACKS
+        # ============================================
+        
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
-            """🚨 INSTANT interruption - checks expected audio end time"""
+            """🚨 INSTANT interruption detection with timing check"""
             nonlocal stop_audio_flag
             nonlocal current_audio_task
             nonlocal current_processing_task
@@ -1471,10 +1504,12 @@ async def handle_outbound_stream(websocket: WebSocket):
             if not should_be_speaking:
                 return
             
+            # Check word count
             word_count = len(transcript.split())
             if word_count >= 2:
                 logger.warning(f"🚨 INTERRUPTION: '{transcript}' (conf: {confidence:.2f}, time_check: audio should be playing)")
                 
+                # Set stop flag IMMEDIATELY
                 stop_audio_flag['stop'] = True
                 logger.info(f"✅ Stop flag set")
                 
@@ -1490,26 +1525,37 @@ async def handle_outbound_stream(websocket: WebSocket):
                 if current_audio_task and not current_audio_task.done():
                     current_audio_task.cancel()
                 
+                # Cancel processing
                 if current_processing_task and not current_processing_task.done():
+                    logger.info("⚡ Cancelling processing task...")
                     current_processing_task.cancel()
+                    try:
+                        await current_processing_task
+                    except asyncio.CancelledError:
+                        logger.info("✅ Processing task cancelled")
                 
+                # Reset audio state
                 audio_timing_ref['speaking'] = False
                 audio_timing_ref['expected_end'] = 0
                 
+                # Send clear command to Twilio
                 try:
                     clear_message = {"event": "clear", "streamSid": stream_sid}
                     await websocket.send_json(clear_message)
-                    logger.info("✅ Sent clear to Twilio")
+                    logger.info("✅ Sent clear command to Twilio")
                 except Exception as e:
                     logger.error(f"Error sending clear: {e}")
                 
+                # Wait for buffer to clear
                 await asyncio.sleep(0.5)
+                
+                # Reset flag
                 stop_audio_flag['stop'] = False
-                logger.info("✅ Ready for input")
+                logger.info("✅ Ready for customer input")
         
         async def on_deepgram_transcript(session_id: str, transcript: str):
-            nonlocal conversation_transcript
-            nonlocal is_agent_speaking
+            """Handle final transcript from Deepgram"""
+            nonlocal conversation_history
             nonlocal current_agent_context
             nonlocal current_audio_task
             nonlocal current_processing_task
@@ -1517,12 +1563,14 @@ async def handle_outbound_stream(websocket: WebSocket):
             nonlocal greeting_start_time
             nonlocal rejection_count
             
-            if not transcript.strip():
+            if not transcript or transcript.strip() == "":
                 return
             
+            # Ignore echo from greeting
             if greeting_start_time:
                 elapsed = (datetime.utcnow() - greeting_start_time).total_seconds()
                 if elapsed < 3:
+                    logger.debug(f"Ignoring early transcript (echo): '{transcript}' at {elapsed:.1f}s")
                     return
             
             logger.info(f"👤 CUSTOMER: '{transcript}'")
@@ -1530,19 +1578,21 @@ async def handle_outbound_stream(websocket: WebSocket):
             # Detect intent
             intent_analysis = await intent_detection_service.detect_customer_intent(
                 customer_message=transcript,
-                conversation_history=conversation_transcript,
+                conversation_history=conversation_history,
                 call_type=call_type
             )
             
-            conversation_transcript.append({
-                'role': 'user',
-                'content': transcript,
-                'timestamp': datetime.utcnow().isoformat(),
+            # Add to conversation history
+            conversation_history.append({
+                "role": "user",
+                "content": transcript,
+                "timestamp": datetime.utcnow().isoformat(),
                 'intent_type': intent_analysis.get('intent_type'),
                 'sentiment': intent_analysis.get('sentiment'),
                 'buying_readiness': intent_analysis.get('buying_readiness')
             })
             
+            # Save to database
             try:
                 db.add(ConversationTurn(
                     call_sid=call_sid,
@@ -1551,8 +1601,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                     created_at=datetime.utcnow()
                 ))
                 db.commit()
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"DB error: {e}")
             
             intent_type = intent_analysis.get('intent_type')
             
@@ -1564,16 +1614,14 @@ async def handle_outbound_stream(websocket: WebSocket):
                     
                     farewell = f"I understand, {customer_name}. Thank you for your time. Have a wonderful day!"
                     
-                    conversation_transcript.append({
+                    conversation_history.append({
                         'role': 'assistant',
                         'content': farewell,
                         'timestamp': datetime.utcnow().isoformat(),
                         'call_ended': True
                     })
                     
-                    is_agent_speaking = True
                     stop_audio_flag['stop'] = False
-                    
                     audio_timing_ref['speaking'] = True
                     
                     current_audio_task = asyncio.create_task(
@@ -1588,7 +1636,6 @@ async def handle_outbound_stream(websocket: WebSocket):
                     except:
                         pass
                     finally:
-                        is_agent_speaking = False
                         audio_timing_ref['speaking'] = False
                         audio_timing_ref['expected_end'] = 0
                         current_audio_task_ref['task'] = None
@@ -1599,7 +1646,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     rejection_count = 0
             
             # Agent routing
-            current_agent_id = master_agent_id
+            current_agent_id = agent_id
             
             if specialized_agents:
                 detected_agent = await intent_router_service.detect_intent(
@@ -1610,13 +1657,44 @@ async def handle_outbound_stream(websocket: WebSocket):
                 )
                 
                 if detected_agent:
+                    previous_agent_id = intent_router_service.get_current_agent(call_sid, agent_id)
                     intent_router_service.set_current_agent(call_sid, detected_agent)
                     current_agent_id = detected_agent
+                    
+                    agent_info = await agent_config_service.get_agent_by_id(detected_agent)
+                    
+                    if agent_info:
+                        current_agent_context = agent_info
+                        
+                        if detected_agent != previous_agent_id and call_state["interaction_count"] > 0:
+                            logger.info(f"🔀 RE-ROUTING to {agent_info['name']}")
+                            
+                            routing_message = f"Let me connect you with our {agent_info['name']}."
+                            stop_audio_flag['stop'] = False
+                            audio_timing_ref['speaking'] = True
+                            
+                            current_audio_task = asyncio.create_task(
+                                stream_elevenlabs_audio_with_playback_and_timing(
+                                    websocket, stream_sid, routing_message, stop_audio_flag, audio_timing_ref
+                                )
+                            )
+                            current_audio_task_ref['task'] = current_audio_task
+                            
+                            await asyncio.sleep(0.5)
+                            
+                            try:
+                                await current_audio_task
+                            except asyncio.CancelledError:
+                                logger.info("Routing message cancelled")
+                            finally:
+                                audio_timing_ref['speaking'] = False
+                                audio_timing_ref['expected_end'] = 0
+                                current_audio_task = None
+                                current_audio_task_ref['task'] = None
             
             call_state["interaction_count"] += 1
             
             # Process and respond
-            is_agent_speaking = True
             await asyncio.sleep(0.3)
             stop_audio_flag['stop'] = False
             
@@ -1631,28 +1709,31 @@ async def handle_outbound_stream(websocket: WebSocket):
                     current_agent_context=current_agent_context,
                     current_agent_id=current_agent_id,
                     company_id=company_id,
-                    conversation_transcript=conversation_transcript,
+                    conversation_transcript=conversation_history,
                     intent_analysis=intent_analysis,
                     call_type=call_type,
-                    audio_timing_ref=audio_timing_ref,  # ✅ Pass timing ref
+                    audio_timing_ref=audio_timing_ref,
                     current_audio_task_ref=current_audio_task_ref
                 )
             )
             
             try:
                 await current_processing_task
+                logger.info("✓ Response completed")
             except asyncio.CancelledError:
-                pass
+                logger.info("Response cancelled by interruption")
             finally:
-                is_agent_speaking = False
                 current_audio_task = None
                 current_processing_task = None
                 current_audio_task_ref['task'] = None
         
-        # ✅ Initialize Deepgram IMMEDIATELY (don't wait for greeting)
+        # ============================================
+        # STEP 3: INITIALIZE DEEPGRAM (non-blocking)
+        # ============================================
         session_id = f"deepgram_{call_sid}"
         logger.info(f"🎙️ Initializing Deepgram in background...")
         
+        # Start Deepgram initialization (non-blocking)
         deepgram_task = asyncio.create_task(
             deepgram_service.initialize_session(
                 session_id=session_id,
@@ -1661,7 +1742,56 @@ async def handle_outbound_stream(websocket: WebSocket):
             )
         )
         
-        # Message loop - greeting will be sent on FIRST "start" event
+        # ============================================
+        # STEP 4: GREETING FLOW
+        # ============================================
+        
+        # Check if we already have stream_sid from first message
+        if stream_sid:
+            logger.info(f"✅ Stream started (from first message): {stream_sid}")
+            logger.info(f"🚀 INSTANT GREETING - Starting audio NOW")
+            
+            # Wait for Deepgram to be ready
+            if not deepgram_task.done():
+                logger.info("⏳ Waiting for Deepgram...")
+                await deepgram_task
+            
+            # Play greeting
+            audio_timing_ref['speaking'] = True
+            stop_audio_flag['stop'] = False
+            greeting_start_time = datetime.utcnow()
+            
+            current_audio_task = asyncio.create_task(
+                stream_elevenlabs_audio_with_playback_and_timing(
+                    websocket, stream_sid, greeting, stop_audio_flag, audio_timing_ref
+                )
+            )
+            current_audio_task_ref['task'] = current_audio_task
+            
+            try:
+                await current_audio_task
+                logger.info("✅ Greeting completed")
+            except asyncio.CancelledError:
+                logger.info("⚠️ Greeting cancelled")
+            except Exception as e:
+                logger.error(f"❌ Greeting error: {e}")
+            finally:
+                audio_timing_ref['speaking'] = False
+                audio_timing_ref['expected_end'] = 0
+                current_audio_task = None
+                current_audio_task_ref['task'] = None
+            
+            greeting_sent = True
+            conversation_history.append({
+                "role": "assistant",
+                "content": greeting,
+                "timestamp": greeting_start_time.isoformat()
+            })
+            await asyncio.sleep(0.5)
+        
+        # ============================================
+        # STEP 5: MESSAGE LOOP
+        # ============================================
         logger.info("📡 Entering message loop...")
         
         while True:
@@ -1671,16 +1801,18 @@ async def handle_outbound_stream(websocket: WebSocket):
                 event = data.get("event")
                 
                 if event == "start":
+                    # If we haven't sent greeting yet, do it now
                     if not greeting_sent:
                         stream_sid = data.get("streamSid")
                         logger.info(f"✅ Stream started: {stream_sid}")
                         logger.info(f"🚀 INSTANT GREETING - Starting audio NOW")
                         
-                        # Make sure Deepgram is ready first
+                        # Make sure Deepgram is ready
                         if not deepgram_task.done():
                             logger.info("⏳ Waiting for Deepgram...")
                             await deepgram_task
                         
+                        # Play greeting
                         audio_timing_ref['speaking'] = True
                         stop_audio_flag['stop'] = False
                         greeting_start_time = datetime.utcnow()
@@ -1695,8 +1827,10 @@ async def handle_outbound_stream(websocket: WebSocket):
                         try:
                             await current_audio_task
                             logger.info("✅ Greeting completed")
-                        except:
-                            pass
+                        except asyncio.CancelledError:
+                            logger.info("⚠️ Greeting cancelled")
+                        except Exception as e:
+                            logger.error(f"❌ Greeting error: {e}")
                         finally:
                             audio_timing_ref['speaking'] = False
                             audio_timing_ref['expected_end'] = 0
@@ -1704,70 +1838,105 @@ async def handle_outbound_stream(websocket: WebSocket):
                             current_audio_task_ref['task'] = None
                         
                         greeting_sent = True
+                        conversation_history.append({
+                            "role": "assistant",
+                            "content": greeting,
+                            "timestamp": greeting_start_time.isoformat()
+                        })
                         await asyncio.sleep(0.5)
                 
                 elif event == "media":
                     payload = data.get("media", {}).get("payload")
-                    if payload:
+                    if payload and session_id:
                         audio = await deepgram_service.convert_twilio_audio(payload, session_id)
                         if audio:
                             await deepgram_service.process_audio_chunk(session_id, audio)
                 
                 elif event == "stop":
+                    logger.info("🛑 Stream stopped")
                     break
             
             except asyncio.TimeoutError:
                 continue
             except WebSocketDisconnect:
+                logger.info("🔌 WebSocket disconnected")
                 break
             except Exception as e:
-                logger.error(f"Error: {e}")
+                logger.error(f"❌ Error in message loop: {e}")
                 break
     
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Fatal error in outbound stream: {e}")
+        logger.exception(e)
     
     finally:
+        # ============================================
+        # CLEANUP
+        # ============================================
         logger.info(f"🧹 Cleanup {call_sid}")
         
-        try:
-            call_duration = int((datetime.utcnow() - call_metadata['start_time']).total_seconds())
-            
-            s3_urls = await call_recording_service.save_call_data(
-                call_sid=call_sid,
-                company_id=company_id,
-                agent_id=master_agent_id,
-                transcript=conversation_transcript,
-                recording_url=None,
-                duration=call_duration,
-                from_number=call_metadata.get('from_number'),
-                to_number=call_metadata.get('to_number')
-            )
-            
+        # Cancel audio task if running
+        if current_audio_task and not current_audio_task.done():
+            current_audio_task.cancel()
             try:
-                call_record = db.query(Call).filter_by(call_sid=call_sid).first()
-                
-                if call_record:
-                    call_record.transcription = s3_urls.get('transcript_url')
-                    call_record.duration = call_duration
-                    call_record.status = 'completed'
-                    call_record.ended_at = datetime.utcnow()
-                    db.commit()
+                await current_audio_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Close Deepgram
+        if session_id:
+            try:
+                await deepgram_service.close_session(session_id)
             except:
-                db.rollback()
-        except:
-            pass
+                pass
+        
+        # Save transcript and call data
+        if conversation_history and call_sid:
+            try:
+                call_duration = 0
+                if call_metadata.get('start_time'):
+                    call_duration = int((datetime.utcnow() - call_metadata['start_time']).total_seconds())
+                
+                s3_urls = await call_recording_service.save_call_data(
+                    call_sid=call_sid,
+                    company_id=company_id,
+                    agent_id=agent_id,
+                    transcript=conversation_history,
+                    recording_url=None,
+                    duration=call_duration,
+                    from_number=call_metadata.get('from_number'),
+                    to_number=call_metadata.get('to_number')
+                )
+                
+                try:
+                    call_record = db.query(Call).filter_by(call_sid=call_sid).first()
+                    
+                    if call_record:
+                        call_record.transcription = s3_urls.get('transcript_url')
+                        call_record.duration = call_duration
+                        call_record.status = 'completed'
+                        call_record.ended_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Database update error: {db_error}")
+                    db.rollback()
+            
+            except Exception as upload_error:
+                logger.error(f"S3 upload error: {upload_error}")
+        
+        # Clear routing state
+        intent_router_service.clear_call(call_sid)
+        
+        # Remove from context
+        call_context.pop(call_sid, None)
+        
+        # Close database
+        db.close()
         
         try:
-            await deepgram_service.close_session(session_id)
+            await websocket.close()
         except:
             pass
-        
-        call_context.pop(call_sid, None)
-        db.close()
-
 
 @router.post("/initiate-outbound-call")
 async def initiate_outbound_call(request: Request):
