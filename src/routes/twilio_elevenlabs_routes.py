@@ -1977,3 +1977,32 @@ async def initiate_outbound_call(request: Request):
             "success": False,
             "error": str(e)
         }
+
+@router.post("/call-status")
+async def handle_call_status(request: Request):
+    """Handle Twilio call status callbacks"""
+    try:
+        form_data = await request.form()
+        call_sid = form_data.get("CallSid")
+        call_status = form_data.get("CallStatus")
+        
+        logger.info(f"Call status update: {call_sid} -> {call_status}")
+        
+        # Update database
+        db = SessionLocal()
+        try:
+            call_record = db.query(Call).filter_by(call_sid=call_sid).first()
+            if call_record:
+                call_record.status = call_status
+                if call_status == 'completed':
+                    call_record.ended_at = datetime.utcnow()
+                db.commit()
+        except Exception as e:
+            logger.error(f"DB error: {e}")
+        finally:
+            db.close()
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error handling call status: {e}")
+        return {"status": "error"}
