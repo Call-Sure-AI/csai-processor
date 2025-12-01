@@ -10,6 +10,7 @@ from services.rag.rag_service import get_rag_service
 from services.rag_routing_service import rag_routing_service
 from services.datetime_parser_service import datetime_parser_service
 from services.booking_orchestration_service import booking_orchestrator, BookingState
+from services.company_service import company_service
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from datetime import datetime, timedelta
 from config.settings import settings
@@ -1006,7 +1007,7 @@ async def process_and_respond_outbound(
                 })
         
         # Get context
-        company_name = current_agent_context.get('name', 'our company')
+        company_name = company_service.get_company_name_by_id(call_context.get("company_id"))
         
         now = datetime.now()
         tomorrow = now + timedelta(days=1)
@@ -1325,7 +1326,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     additional_context = master_agent.get('additional_context', {})
     business_context = additional_context.get('businessContext', 'our services')
 
-    company_name = "our company"
+    company_name = company_service.get_company_name_by_id(company_id)
     
     greeting = (
         f"Hello {customer_name}! This is calling from {company_name}. "
