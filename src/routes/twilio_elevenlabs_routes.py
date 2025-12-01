@@ -1,4 +1,3 @@
-# src\routes\twilio_elevenlabs_routes.py - PART 1 OF 2
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -99,7 +98,6 @@ async def handle_incoming_call_elevenlabs(request: Request):
         return Response(content=str(response), media_type="application/xml")
 
 
-# ✅ NEW: Call status endpoint
 @router.post("/call-status")
 async def handle_call_status(request: Request):
     """Handle Twilio call status callbacks"""
@@ -657,8 +655,6 @@ async def handle_media_stream(websocket: WebSocket):
         call_context.pop(call_sid, None)
         db.close()
 
-# src\routes\twilio_elevenlabs_routes.py - PART 2 OF 2
-# ⬇️ CONTINUE FROM PART 1 - ADD THIS TO THE END OF THE FILE ⬇️
 
 async def process_and_respond_incoming(
     transcript: str,
@@ -875,7 +871,8 @@ async def process_and_respond_outbound(
     company_id: str,
     conversation_transcript: list,
     intent_analysis: dict,
-    call_type: str
+    call_type: str,
+    current_audio_task_ref: dict  # ✅ NEW: Pass reference to update current_audio_task
 ):
     """
     Outbound call processing with SLOT VALIDATION + OPTIMIZED LATENCY.
@@ -996,7 +993,7 @@ async def process_and_respond_outbound(
         # Get context
         company_name = company_service.get_company_name_by_id(company_id)
         
-        # Choose prompt
+        # ✅ IMPROVED SALES PROMPT - Allows answering product questions
         if is_sales_call:
             next_action = booking_orchestrator.get_next_action(call_sid) if booking_session else {'prompt_hint': 'Ask for date/time'}
             collected = booking_session['collected_data'] if booking_session else {}
@@ -1006,9 +1003,9 @@ async def process_and_respond_outbound(
             has_time = collected.get('time') is not None
             has_email = customer.get('email') is not None
             
-            prompt = f"""Booking demo for {customer_name}.
+            prompt = f"""Sales call for {company_name} with {customer_name}.
 
-**We have:**
+**Booking Progress:**
 - Name: ✅ {customer_name}
 - Phone: ✅ {customer_phone}
 - Date: {'✅ ' + collected.get('date') if has_date else '❌ NEED'}
@@ -1023,27 +1020,32 @@ async def process_and_respond_outbound(
 **Next step:** {next_action['prompt_hint']}
 
 **CRITICAL RULES:**
-1. We already have name and phone - DO NOT ask for them again
-2. We NEED to collect: date, time, and email (in that order)
-3. Flow: date → time → check availability → email → confirm
-4. NO support tickets in sales calls
-5. Max 1-2 sentences
+1. We already have name and phone - NEVER ask for them
+2. Primary goal: Collect date, time, and email to complete booking
+3. Flow: date → time → verify slot → email → confirm booking
+4. **PRODUCT QUESTIONS**: If customer asks about the product/features/benefits:
+   - Give a brief answer (1-2 sentences max)
+   - Then immediately guide back to booking: "Would you like to see this in action? Let's schedule that demo."
+5. Keep ALL responses to 1-2 sentences maximum
+6. NO support tickets in sales mode
 
-**If customer asks "what's available?":**
-Suggest the slots listed above - DON'T call check_slot_availability
+**Examples:**
+Customer: "What does your product do?"
+You: "We help businesses automate their sales calls with AI. Want to see how it works for your team? What time works best?"
 
-**If customer gives specific date+time:**
-Use check_slot_availability function to verify
+Customer: "How much does it cost?"
+You: "Pricing varies by plan - I can show you options that fit your needs in the demo. When would you like to schedule it?"
 
-**After date+time confirmed but no email:**
-Say: "Perfect! What's your email for the confirmation?"
+Customer: "tomorrow at 2pm"
+You: Use check_slot_availability function to verify
 
-**After email collected:**
+**After verified slot + email collected:**
 Use verify_customer_email function, then create_booking
 
-Keep it brief. Book the demo."""
+Be conversational but focused on booking."""
 
         else:
+            # Non-sales mode
             prompt = f"""Sales call for {company_name}.
 
 Customer: {customer_name}
@@ -1051,13 +1053,13 @@ Interest Level: {buying_readiness}%
 
 **Approach based on interest:**
 - 70%+: "Would you like to book a demo?"
-- 40-70%: Share 1 key benefit
+- 40-70%: Share 1 key benefit + ask booking interest
 - <40%: Ask 1 qualifying question
 
 **Rules:**
-- Max 1 sentence
+- Max 1-2 sentences
 - NO support tickets in sales mode
-- Focus on booking
+- Focus on moving toward booking
 
 Be conversational."""
         
@@ -1099,7 +1101,7 @@ Be conversational."""
                 
                 logger.info(f"✓ Result: {llm_response[:80]}...")
                 
-                # ✅ FIX: Update state AFTER execution
+                # ✅ FIX: Update state AFTER execution based on ACTUAL result
                 if function_name == 'check_slot_availability':
                     # Check if slot is ACTUALLY available
                     if 'available' in llm_response.lower() and 'not available' not in llm_response.lower() and 'outside' not in llm_response.lower():
@@ -1148,10 +1150,21 @@ Be conversational."""
         ))
         db.commit()
         
-        # Stream to customer
-        await stream_elevenlabs_audio_with_playback(
-            websocket, stream_sid, llm_response, stop_audio_flag
+        # ✅ CRITICAL FIX: Create task and store in reference so interruption can cancel it
+        audio_task = asyncio.create_task(
+            stream_elevenlabs_audio_with_playback(
+                websocket, stream_sid, llm_response, stop_audio_flag
+            )
         )
+        current_audio_task_ref['task'] = audio_task
+        
+        try:
+            await audio_task
+        except asyncio.CancelledError:
+            logger.info("Audio playback cancelled by interruption")
+            raise
+        finally:
+            current_audio_task_ref['task'] = None
         
     except Exception as e:
         logger.error(f"❌ Error: {e}")
@@ -1159,9 +1172,20 @@ Be conversational."""
         logger.error(traceback.format_exc())
         
         error_msg = "Could you repeat that?"
-        await stream_elevenlabs_audio_with_playback(
-            websocket, stream_sid, error_msg, stop_audio_flag
+        
+        error_task = asyncio.create_task(
+            stream_elevenlabs_audio_with_playback(
+                websocket, stream_sid, error_msg, stop_audio_flag
+            )
         )
+        current_audio_task_ref['task'] = error_task
+        
+        try:
+            await error_task
+        except:
+            pass
+        finally:
+            current_audio_task_ref['task'] = None
 
 
 @router.post("/outbound-connect")
@@ -1226,7 +1250,7 @@ async def handle_outbound_connect(request: Request):
 
 @router.websocket("/outbound-stream")
 async def handle_outbound_stream(websocket: WebSocket):
-    """Outbound call streaming - OPTIMIZED FOR SPEED"""
+    """Outbound call streaming - FULLY OPTIMIZED"""
     try:
         await websocket.accept()
         logger.info("✅ WebSocket ACCEPTED")
@@ -1244,6 +1268,9 @@ async def handle_outbound_stream(websocket: WebSocket):
     greeting_sent = False
     greeting_start_time = None
     rejection_count = 0
+    
+    # ✅ NEW: Dict to hold current audio task reference
+    current_audio_task_ref = {'task': None}
     
     if not call_sid:
         try:
@@ -1274,27 +1301,25 @@ async def handle_outbound_stream(websocket: WebSocket):
     campaign_id = context.get("campaign_id", "")
     call_type = context.get("call_type", "outgoing")
     
-    # ✅ OPTIMIZATION: Pre-fetch agent config & company name IN PARALLEL
-    async def fetch_agent_config():
-        return await agent_config_service.get_master_agent(company_id, master_agent_id)
+    # ✅ FIX #1: PARALLEL GREETING GENERATION
+    logger.info(f"🚀 Starting parallel initialization...")
+    start_time = datetime.utcnow()
     
-    async def fetch_company_name():
-        return company_service.get_company_name_by_id(company_id)
+    async def fetch_agent_and_company():
+        """Fetch agent config and company name in parallel"""
+        agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
+        company = company_service.get_company_name_by_id(company_id)
+        return agent, company
     
-    # Run in parallel to save time
-    master_agent, company_name = await asyncio.gather(
-        fetch_agent_config(),
-        fetch_company_name(),
-        return_exceptions=True
-    )
+    master_agent, company_name = await fetch_agent_and_company()
     
-    if isinstance(master_agent, Exception) or not master_agent:
+    init_duration = (datetime.utcnow() - start_time).total_seconds()
+    logger.info(f"⚡ Initialization complete in {init_duration:.2f}s")
+    
+    if not master_agent:
         logger.error(f"Failed to fetch master agent")
         await websocket.close(code=1008)
         return
-    
-    if isinstance(company_name, Exception):
-        company_name = "our company"
     
     agent_name = master_agent["name"]
     current_agent_context = master_agent
@@ -1317,7 +1342,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         f"Would you be interested in learning more?"
     )
     
-    logger.info(f"💬 Greeting pre-generated")
+    logger.info(f"💬 Greeting pre-generated: '{greeting[:50]}...'")
     
     # Load agents
     available_agents = await agent_config_service.get_company_agents(company_id)
@@ -1338,7 +1363,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     }
     
     try:
-        # ✅ INSTANT INTERRUPTION CALLBACK
+        # ✅ FIX #2: PROPER INTERRUPTION CALLBACK WITH TASK REFERENCE
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
             """🚨 INSTANT interruption"""
             nonlocal is_agent_speaking
@@ -1351,34 +1376,49 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             word_count = len(transcript.split())
             if word_count >= 2:
-                logger.warning(f"🚨 INTERRUPTION: '{transcript}' (conf: {confidence:.2f})")
+                logger.warning(f"🚨 INTERRUPTION DETECTED: '{transcript}' (conf: {confidence:.2f})")
                 
                 stop_audio_flag['stop'] = True
+                logger.info(f"✅ Stop flag set to TRUE")
                 
+                # ✅ Cancel the ACTUAL current audio task from reference
+                if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
+                    logger.info("⚡ Cancelling audio task from reference...")
+                    current_audio_task_ref['task'].cancel()
+                    try:
+                        await current_audio_task_ref['task']
+                    except asyncio.CancelledError:
+                        logger.info("✅ Audio task cancelled")
+                
+                # Also cancel old-style task if exists
                 if current_audio_task and not current_audio_task.done():
+                    logger.info("⚡ Cancelling old audio task...")
                     current_audio_task.cancel()
                     try:
                         await current_audio_task
                     except asyncio.CancelledError:
-                        pass
+                        logger.info("✅ Old audio task cancelled")
                 
                 if current_processing_task and not current_processing_task.done():
+                    logger.info("⚡ Cancelling processing task...")
                     current_processing_task.cancel()
                     try:
                         await current_processing_task
                     except asyncio.CancelledError:
-                        pass
+                        logger.info("✅ Processing task cancelled")
                 
                 is_agent_speaking = False
                 
                 try:
                     clear_message = {"event": "clear", "streamSid": stream_sid}
                     await websocket.send_json(clear_message)
-                except:
-                    pass
+                    logger.info("✅ Sent clear command to Twilio")
+                except Exception as e:
+                    logger.error(f"Error sending clear: {e}")
                 
                 await asyncio.sleep(0.5)
                 stop_audio_flag['stop'] = False
+                logger.info("✅ Ready for customer input")
         
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
@@ -1450,6 +1490,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                     current_audio_task = asyncio.create_task(
                         stream_elevenlabs_audio_with_playback(websocket, stream_sid, farewell, stop_audio_flag)
                     )
+                    current_audio_task_ref['task'] = current_audio_task
                     
                     try:
                         await current_audio_task
@@ -1457,6 +1498,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                         pass
                     finally:
                         is_agent_speaking = False
+                        current_audio_task_ref['task'] = None
                     
                     return
             else:
@@ -1498,7 +1540,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                     company_id=company_id,
                     conversation_transcript=conversation_transcript,
                     intent_analysis=intent_analysis,
-                    call_type=call_type
+                    call_type=call_type,
+                    current_audio_task_ref=current_audio_task_ref  # ✅ Pass reference
                 )
             )
             
@@ -1510,6 +1553,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 is_agent_speaking = False
                 current_audio_task = None
                 current_processing_task = None
+                current_audio_task_ref['task'] = None
         
         # Initialize Deepgram
         session_id = f"deepgram_{call_sid}"
@@ -1539,14 +1583,16 @@ async def handle_outbound_stream(websocket: WebSocket):
             current_audio_task = asyncio.create_task(
                 stream_elevenlabs_audio_with_playback(websocket, stream_sid, greeting, stop_audio_flag)
             )
+            current_audio_task_ref['task'] = current_audio_task
             
             try:
                 await current_audio_task
-            except:
+            except asyncio.CancelledError:
                 pass
             finally:
                 is_agent_speaking = False
                 current_audio_task = None
+                current_audio_task_ref['task'] = None
             
             greeting_sent = True
             await asyncio.sleep(0.5)
@@ -1569,6 +1615,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                         current_audio_task = asyncio.create_task(
                             stream_elevenlabs_audio_with_playback(websocket, stream_sid, greeting, stop_audio_flag)
                         )
+                        current_audio_task_ref['task'] = current_audio_task
                         
                         try:
                             await current_audio_task
@@ -1577,6 +1624,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                         finally:
                             is_agent_speaking = False
                             current_audio_task = None
+                            current_audio_task_ref['task'] = None
                         
                         greeting_sent = True
                 
