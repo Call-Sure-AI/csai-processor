@@ -29,6 +29,7 @@ from urllib.parse import quote
 from services.agent_tools import execute_function
 from services.intent_detection_service import intent_detection_service
 import uuid
+from services.slot_manager_service import SlotManagerService
 
 twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
@@ -924,9 +925,9 @@ async def process_and_respond_outbound(
     call_type: str
 ):
     """
-    CORRECT FLOW:
-    - We HAVE: name, phone (from curl)
-    - We NEED: date, time, email
+    Outbound call processing with SLOT MANAGER INTEGRATION.
+    
+    Fetches available slots from backend and injects into prompt.
     """
     
     rag = get_rag_service()
@@ -970,7 +971,7 @@ async def process_and_respond_outbound(
         
         is_sales_call = is_booking_mode or buying_readiness >= 50
         
-        # AI-powered datetime parsing
+        # AI-powered datetime parsing (always run - no keyword pre-check)
         datetime_info = await datetime_parser_service.parse_user_datetime(
             user_input=transcript,
             user_timezone=call_metadata.get('user_timezone', 'UTC'),
@@ -1014,6 +1015,37 @@ async def process_and_respond_outbound(
         tomorrow = now + timedelta(days=1)
         day_after = now + timedelta(days=2)
         
+        # 🆕 FETCH AVAILABLE SLOTS FROM BACKEND (if in booking mode)
+        available_slots_text = ""
+        if is_booking_mode and campaign_id:
+            try:
+                logger.info(f"🔍 Fetching available slots for campaign {campaign_id}...")
+                
+                slot_manager = SlotManagerService()
+                slots_data = await slot_manager.get_available_slots(
+                    campaign_id=campaign_id,
+                    start_date=now,
+                    end_date=now + timedelta(days=7),  # Next 7 days
+                    count=5
+                )
+                
+                logger.info(f"📅 Slots fetched: {slots_data.get('count', 0)} slots")
+                logger.info(f"   Source: {slots_data.get('source', 'unknown')}")
+                
+                # Format slots for prompt
+                available_slots_text = slot_manager.format_slots_for_prompt(slots_data)
+                logger.info(f"   Formatted slots:\n{available_slots_text}")
+                
+            except Exception as slot_error:
+                logger.error(f"⚠️ Error fetching slots: {slot_error}")
+                # Fallback to generic suggestions
+                available_slots_text = (
+                    "Suggested times:\n"
+                    f"1. Tomorrow ({tomorrow.strftime('%A, %B %d')}) at 10 AM\n"
+                    f"2. Tomorrow at 2 PM\n"
+                    f"3. {day_after.strftime('%A, %B %d')} at 10 AM"
+                )
+        
         # Choose prompt
         if is_sales_call:
             # BOOKING MODE
@@ -1025,6 +1057,7 @@ async def process_and_respond_outbound(
             has_time = collected.get('time') is not None
             has_email = customer.get('email') is not None
             
+            # 🆕 INJECT AVAILABLE SLOTS INTO PROMPT
             prompt = f"""Booking demo for {customer_name}.
 
 **We have:**
@@ -1034,48 +1067,57 @@ async def process_and_respond_outbound(
 - Time: {'✅ ' + collected.get('time') if has_time else '❌ NEED'}
 - Email: {'✅ ' + customer.get('email') if has_email else '❌ NEED'}
 
-**Today:** {now.strftime('%A, %B %d')}
+**Today:** {now.strftime('%A, %B %d, %Y')}
+
+**Available Time Slots:**
+{available_slots_text if available_slots_text else "Suggest: tomorrow 10 AM, 2 PM, or 4 PM"}
 
 **Next step:** {next_action['prompt_hint']}
 
 **CRITICAL RULES:**
-1. We already have name and phone - DO NOT ask for them
-2. We NEED to collect: date, time, and email
+1. We already have name and phone - DO NOT ask for them again
+2. We NEED to collect: date, time, and email (in that order)
 3. Flow: date → time → check availability → email → confirm
 4. NO support tickets in sales calls
 5. Max 1 sentence responses
 
-**If date+time collected but no email:**
-Say: "Perfect! What's your email for the confirmation?"
+**If customer asks "what's available?":**
+Suggest the slots listed above - DON'T call check_slot_availability
 
-**Suggest times:**
-- "Tomorrow at 10 AM?"
-- "{tomorrow.strftime('%B %d')} at 2 PM?"
+**If customer gives specific date+time:**
+Use check_slot_availability function to verify
+
+**After date+time confirmed but no email:**
+Say: "Perfect! What's your email for the confirmation?"
 
 **After email collected:**
 Use verify_customer_email function, then create_booking
 
-Be brief. Book it."""
+Keep it brief. Book the demo."""
 
         else:
             # SALES MODE
-            prompt = f"""Sales for {company_name}.
+            prompt = f"""Sales call for {company_name}.
 
 Customer: {customer_name}
-Interest: {buying_readiness}%
+Interest Level: {buying_readiness}%
 
-**Approach:**
-- 70%+: "Want to book a demo?"
-- 40-70%: Share 1 benefit
-- <40%: Ask 1 question
+**Approach based on interest:**
+- 70%+: "Would you like to book a demo?"
+- 40-70%: Share 1 key benefit
+- <40%: Ask 1 qualifying question
 
-1 sentence max.
-NO tickets."""
+**Rules:**
+- Max 1 sentence
+- NO support tickets in sales mode
+- Focus on booking
+
+Be conversational."""
         
         conversation_messages.insert(0, {'role': 'system', 'content': prompt})
         
-        # Single API call
-        logger.info("💬 LLM call")
+        # Single LLM call with functions
+        logger.info("💬 Calling LLM with functions...")
         
         response = await rag.llm_with_functions.ainvoke(conversation_messages)
         
@@ -1085,20 +1127,21 @@ NO tickets."""
             function_name = function_call['name']
             arguments = json.loads(function_call['arguments'])
             
-            logger.info(f"📞 Function: {function_name}")
+            logger.info(f"📞 Function called: {function_name}")
+            logger.info(f"   Arguments: {arguments}")
             
             # Block ticket creation during sales
             if function_name == 'create_ticket' and is_sales_call:
-                logger.warning(f"🚫 BLOCKED: create_ticket during sales")
-                llm_response = "Let me book that demo. What date works?"
+                logger.warning(f"🚫 BLOCKED: create_ticket during sales call")
+                llm_response = "Let me help you book that demo. What date works best for you?"
             
             else:
                 # Execute function
-                logger.info(f"✅ Executing: {function_name}")
+                logger.info(f"✅ Executing function: {function_name}")
                 
                 # Update state before execution
                 if function_name == 'check_slot_availability' and booking_session:
-                    booking_orchestrator.transition_state(call_sid, BookingState.CHECKING_AVAILABILITY, "Checking")
+                    booking_orchestrator.transition_state(call_sid, BookingState.CHECKING_AVAILABILITY, "Verifying slot")
                 
                 from services.agent_tools import execute_function
                 llm_response = await execute_function(
@@ -1111,36 +1154,39 @@ NO tickets."""
                     business_hours={'start': '09:00', 'end': '18:00'}
                 )
                 
+                logger.info(f"✓ Function result: {llm_response[:100]}...")
+                
                 # Update state after execution
                 if function_name == 'check_slot_availability':
-                    if 'available' in llm_response.lower():
+                    if 'available' in llm_response.lower() and 'not available' not in llm_response.lower():
                         booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
-                        # ✅ After slot confirmed, ask for email
-                        booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_EMAIL, "Slot available, need email")
+                        booking_orchestrator.transition_state(call_sid, BookingState.COLLECTING_EMAIL, "Slot confirmed, need email")
                     else:
-                        logger.info("Slot unavailable, staying in collecting state")
+                        logger.info("⚠️ Slot unavailable, staying in collecting state")
                 
                 elif function_name == 'verify_customer_email':
                     booking_orchestrator.update_session_data(call_sid, 'email_verified', True)
-                    booking_orchestrator.transition_state(call_sid, BookingState.CONFIRMING_BOOKING, "Email verified")
+                    booking_orchestrator.transition_state(call_sid, BookingState.CONFIRMING_BOOKING, "Email verified, ready to book")
                 
                 elif function_name == 'create_booking':
                     booking_orchestrator.transition_state(call_sid, BookingState.COMPLETED, "Booking complete!")
-                    logger.info(f"✅ BOOKING COMPLETE: {customer_name}")
+                    logger.info(f"✅ BOOKING COMPLETE for {customer_name}")
         
         else:
             # No function call - direct response
             llm_response = response.content
+            logger.info(f"💬 Direct response (no function): {llm_response[:80]}...")
         
         # Save to transcript
         conversation_transcript.append({
             'role': 'assistant',
             'content': llm_response,
             'timestamp': datetime.utcnow().isoformat(),
-            'booking_mode': is_booking_mode
+            'booking_mode': is_booking_mode,
+            'slots_provided': bool(available_slots_text)
         })
         
-        logger.info(f"AGENT: {llm_response[:80]}{'...' if len(llm_response) > 80 else ''}")
+        logger.info(f"AGENT RESPONSE: {llm_response[:100]}{'...' if len(llm_response) > 100 else ''}")
         
         # Save to DB
         db.add(ConversationTurn(
@@ -1157,7 +1203,7 @@ NO tickets."""
         )
         
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"❌ Error in process_and_respond_outbound: {e}")
         import traceback
         logger.error(traceback.format_exc())
         
