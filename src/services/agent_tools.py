@@ -3,7 +3,7 @@ from typing import Dict, Any, List
 from services.ticket_service import ticket_service
 from services.booking_service import booking_service
 from services.datetime_parser_service import datetime_parser_service
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
