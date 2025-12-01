@@ -20,7 +20,20 @@ class DeepgramWebSocketService:
         self.sessions: Dict[str, Dict] = {}
         self.deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
         
-    async def initialize_session(self, session_id: str, callback: Callable[[str, str], Awaitable[None]]) -> bool:
+    async def initialize_session(
+        self, 
+        session_id: str, 
+        callback: Callable[[str, str], Awaitable[None]],
+        interruption_callback: Optional[Callable[[str, str, float], Awaitable[None]]] = None
+    ) -> bool:
+        """
+        Initialize Deepgram session with optional interruption detection.
+        
+        Args:
+            session_id: Unique session identifier
+            callback: Called with (session_id, transcript) for FINAL transcripts
+            interruption_callback: Called with (session_id, transcript, confidence) for INTERIM transcripts
+        """
         try:
             if session_id in self.sessions:
                 logger.info(f"Closing existing session for {session_id}")
@@ -45,6 +58,7 @@ class DeepgramWebSocketService:
                 "connection": dg_connection,
                 "connected": False,
                 "callback": callback,
+                "interruption_callback": interruption_callback,
             }
             self.sessions[session_id] = session
             
@@ -60,11 +74,28 @@ class DeepgramWebSocketService:
                     if len(sentence) == 0:
                         return
                     
+                    # Get confidence score
+                    confidence = result.channel.alternatives[0].confidence if hasattr(result.channel.alternatives[0], 'confidence') else 0.0
+                    
                     if result.is_final:
+                        # FINAL transcript - always process
                         logger.info(f"Deepgram final: '{sentence}'")
                         await callback(session_id, sentence)
                     else:
-                        logger.debug(f"Interim: '{sentence}'")
+                        # INTERIM transcript - check for interruption
+                        logger.debug(f"Interim: '{sentence}' (confidence: {confidence:.2f})")
+                        
+                        # Only trigger interruption if:
+                        # 1. Interruption callback is provided
+                        # 2. Transcript has at least 2 words (to avoid false positives)
+                        # 3. Confidence is above threshold (if available)
+                        if interruption_callback:
+                            word_count = len(sentence.split())
+                            confidence_threshold = 0.5  # Adjust as needed
+                            
+                            if word_count >= 2 and (confidence == 0.0 or confidence >= confidence_threshold):
+                                logger.debug(f"🎤 Potential interruption: '{sentence}' ({word_count} words)")
+                                await interruption_callback(session_id, sentence, confidence)
                         
                 except Exception as e:
                     logger.error(f"Error in on_message: {str(e)}")
@@ -107,7 +138,7 @@ class DeepgramWebSocketService:
                 channels=1,
                 punctuate=True,
                 smart_format=True,
-                interim_results=False,
+                interim_results=True,  # ✅ CHANGED: Enable interim results for instant interruption
                 endpointing=300,
             )
             

@@ -1009,7 +1009,7 @@ async def process_and_respond_outbound(
                 })
         
         # Get context
-        company_name = company_service.get_company_name_by_id(call_context.get("company_id"))
+        company_name = company_service.get_company_name_by_id(company_id)
         
         now = datetime.now()
         tomorrow = now + timedelta(days=1)

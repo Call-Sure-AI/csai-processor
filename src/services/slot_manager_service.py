@@ -154,27 +154,50 @@ class SlotManagerService:
         Format slots for inclusion in LLM prompt.
         """
         
-        if not slots_data.get("has_slots") or not slots_data.get("slots"):
+        # Check if we have any slots (database OR fallback)
+        slots = slots_data.get("slots", [])
+        if not slots:
             return "No specific slots available. Suggest general time ranges (morning: 9-11 AM, afternoon: 2-4 PM)."
         
-        slots = slots_data["slots"]
         source = slots_data.get("source", "unknown")
         
         if source == "database":
-            # Format database slots
+            # Format database slots with capacity info
             formatted = ["Available slots from your calendar:"]
             for i, slot in enumerate(slots[:5], 1):
-                start = datetime.fromisoformat(slot["start"].replace('Z', '+00:00'))
-                capacity_info = ""
-                if slot.get("max_capacity", 1) > 1:
-                    available = slot.get("available_capacity", 1)
-                    total = slot.get("max_capacity", 1)
-                    capacity_info = f" ({available}/{total} spots)"
-                formatted.append(f"{i}. {start.strftime('%A, %B %d at %I:%M %p')}{capacity_info}")
+                try:
+                    start = datetime.fromisoformat(slot["start"].replace('Z', '+00:00'))
+                    capacity_info = ""
+                    if slot.get("max_capacity", 1) > 1:
+                        available = slot.get("available_capacity", 1)
+                        total = slot.get("max_capacity", 1)
+                        capacity_info = f" ({available}/{total} spots)"
+                    formatted.append(f"{i}. {start.strftime('%A, %B %d at %I:%M %p')}{capacity_info}")
+                except Exception as e:
+                    logger.error(f"Error formatting slot: {e}")
+                    continue
+            
+            if len(formatted) == 1:  # Only header, no valid slots
+                return "No specific slots available. Suggest general time ranges (morning: 9-11 AM, afternoon: 2-4 PM)."
+            
             return "\n".join(formatted)
+        
         else:
-            # Format fallback suggestions
+            # Format fallback suggestions (FIX: Actually format them!)
             formatted = ["Suggested times:"]
             for i, slot in enumerate(slots[:5], 1):
-                formatted.append(f"{i}. {slot.get('label', 'Available slot')}")
+                label = slot.get('label')
+                if label:
+                    formatted.append(f"{i}. {label}")
+                else:
+                    # Fallback formatting if label missing
+                    try:
+                        start = datetime.fromisoformat(slot["start"].replace('Z', '+00:00'))
+                        formatted.append(f"{i}. {start.strftime('%A, %B %d at %I:%M %p')}")
+                    except:
+                        continue
+            
+            if len(formatted) == 1:  # Only header, no valid slots
+                return "No specific slots available. Suggest general time ranges (morning: 9-11 AM, afternoon: 2-4 PM)."
+            
             return "\n".join(formatted)
