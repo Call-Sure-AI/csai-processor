@@ -45,7 +45,7 @@ class DeepgramWebSocketService:
 
             logger.info(f"Initializing Deepgram session {session_id}")
             
-            # Initialize Deepgram client with SDK 3.7.2
+            # Initialize Deepgram client
             config = DeepgramClientOptions(
                 options={"keepalive": "true"}
             )
@@ -64,7 +64,7 @@ class DeepgramWebSocketService:
             
             # Event handlers
             async def on_open(self_inner, open_event, **kwargs):
-                logger.info(f"Deepgram connected: {session_id}")
+                logger.info(f"✅ Deepgram connected: {session_id}")
                 session["connected"] = True
             
             async def on_message(self_inner, result, **kwargs):
@@ -79,22 +79,21 @@ class DeepgramWebSocketService:
                     
                     if result.is_final:
                         # FINAL transcript - always process
-                        logger.info(f"Deepgram final: '{sentence}'")
+                        logger.info(f"📝 Final: '{sentence}'")
                         await callback(session_id, sentence)
                     else:
                         # INTERIM transcript - check for interruption
-                        logger.debug(f"Interim: '{sentence}' (confidence: {confidence:.2f})")
+                        word_count = len(sentence.split())
                         
-                        # Only trigger interruption if:
-                        # 1. Interruption callback is provided
-                        # 2. Transcript has at least 2 words (to avoid false positives)
-                        # 3. Confidence is above threshold (if available)
+                        # Log ALL interim transcripts for debugging
+                        logger.debug(f"⚡ Interim: '{sentence}' (words: {word_count}, conf: {confidence:.2f})")
+                        
+                        # Trigger interruption callback if conditions met
                         if interruption_callback:
-                            word_count = len(sentence.split())
-                            confidence_threshold = 0.5  # Adjust as needed
+                            confidence_threshold = 0.3  # Lowered from 0.5 for faster detection
                             
                             if word_count >= 2 and (confidence == 0.0 or confidence >= confidence_threshold):
-                                logger.debug(f"🎤 Potential interruption: '{sentence}' ({word_count} words)")
+                                logger.info(f"🎯 TRIGGERING INTERRUPTION: '{sentence}' ({word_count} words, conf: {confidence:.2f})")
                                 await interruption_callback(session_id, sentence, confidence)
                         
                 except Exception as e:
@@ -150,7 +149,7 @@ class DeepgramWebSocketService:
             # Wait for connection to be established
             for i in range(50):  # 5 seconds max
                 if session["connected"]:
-                    logger.info(f"Deepgram ready: {session_id}")
+                    logger.info(f"✅ Deepgram ready: {session_id}")
                     return True
                 await asyncio.sleep(0.1)
             
