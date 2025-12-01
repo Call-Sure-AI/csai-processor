@@ -2,44 +2,50 @@ from sqlalchemy.orm import Session
 from typing import Optional
 import logging
 from database.models import Company
-from database.config import get_db
+from database.config import db_manager
 
 logger = logging.getLogger(__name__)
 
 
 class CompanyService:
     def __init__(self):
-        self.db = get_db()
+        pass
     
     def get_company_name_by_id(self, company_id: str) -> Optional[str]:
-        try:
-            company = self.db.query(Company).filter(Company.id == company_id).first()
-            
-            if company:
-                return company.name
-            
-            logger.warning(f"Company not found with id: {company_id}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error fetching company name for id {company_id}: {str(e)}")
-            raise
+        """Get company name by ID using a fresh database session"""
+        with db_manager.get_session_context() as db:
+            try:
+                company = db.query(Company).filter(Company.id == company_id).first()
+                
+                if company:
+                    return company.name
+                
+                logger.warning(f"Company not found with id: {company_id}")
+                return None
+                
+            except Exception as e:
+                logger.error(f"Error fetching company name for id {company_id}: {str(e)}")
+                raise
     
     def get_company_by_id(self, company_id: str) -> Optional[Company]:
-        try:
-            company = self.db.query(Company).filter(Company.id == company_id).first()
-            
-            if not company:
-                logger.warning(f"Company not found with id: {company_id}")
+        """Get company object by ID using a fresh database session"""
+        with db_manager.get_session_context() as db:
+            try:
+                company = db.query(Company).filter(Company.id == company_id).first()
                 
-            return company
-            
-        except Exception as e:
-            logger.error(f"Error fetching company for id {company_id}: {str(e)}")
-            raise
+                if not company:
+                    logger.warning(f"Company not found with id: {company_id}")
+                    
+                return company
+                
+            except Exception as e:
+                logger.error(f"Error fetching company for id {company_id}: {str(e)}")
+                raise
 
-def get_company_name(db: Session, company_id: str) -> Optional[str]:
-    service = CompanyService(db)
+
+def get_company_name(company_id: str) -> Optional[str]:
+    """Standalone function to get company name"""
+    service = CompanyService()
     return service.get_company_name_by_id(company_id)
 
 company_service = CompanyService()
