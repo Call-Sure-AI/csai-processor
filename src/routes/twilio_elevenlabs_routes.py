@@ -203,6 +203,84 @@ async def stream_elevenlabs_audio_with_playback(websocket: WebSocket, stream_sid
         logger.error(f"Error streaming audio: {e}")
 
 
+async def stream_elevenlabs_audio_with_playback_and_timing(
+    websocket: WebSocket, 
+    stream_sid: str, 
+    text: str, 
+    stop_flag_ref: dict,
+    audio_timing_ref: dict
+):
+    """Stream audio with ACCURATE timing tracking based on actual chunks"""
+    if not stream_sid:
+        logger.error("No stream_sid")
+        return
+    
+    try:
+        logger.info(f"🔊 Generating audio: '{text[:50]}...'")
+        chunk_count = 0
+        
+        # Stream audio chunks
+        async for audio_chunk in elevenlabs_service.generate(text):
+            if stop_flag_ref.get('stop', False):
+                logger.warning(f"🛑 STOP FLAG DETECTED - Halting audio stream at chunk {chunk_count}")
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"Clear error: {e}")
+                raise asyncio.CancelledError()
+            
+            if audio_chunk and stream_sid:
+                message = {
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {"payload": audio_chunk}
+                }
+                await websocket.send_json(message)
+                chunk_count += 1
+        
+        logger.info(f"✓ Sent {chunk_count} chunks to Twilio")
+        
+        # ✅ NOW calculate ACCURATE playback duration based on actual chunks
+        playback_duration = (chunk_count * 0.02) + 0.5
+        audio_timing_ref['expected_end'] = time.time() + playback_duration
+        
+        logger.info(f"⏳ Simulating playback: {playback_duration:.1f}s (expected end: {audio_timing_ref['expected_end']:.2f})")
+        
+        # Wait for playback while checking for interruption
+        elapsed = 0
+        check_interval = 0.05
+        
+        while elapsed < playback_duration:
+            if stop_flag_ref.get('stop', False):
+                logger.warning(f"🛑 STOP FLAG DETECTED during playback at {elapsed:.1f}s")
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    await asyncio.sleep(0.5)
+                except:
+                    pass
+                raise asyncio.CancelledError()
+            
+            await asyncio.sleep(check_interval)
+            elapsed += check_interval
+        
+        logger.info(f"✓ Playback completed: {playback_duration:.1f}s")
+        
+    except asyncio.CancelledError:
+        logger.warning(f"🛑 Audio+playback cancelled at chunk {chunk_count}")
+        try:
+            clear_message = {"event": "clear", "streamSid": stream_sid}
+            await websocket.send_json(clear_message)
+            await asyncio.sleep(0.5)
+        except:
+            pass
+        raise
+    except Exception as e:
+        logger.error(f"Error streaming audio: {e}")
+
+
 @router.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
     """Incoming call handler with proper echo prevention and interruption handling"""
@@ -1152,17 +1230,12 @@ Be conversational."""
         ))
         db.commit()
         
-        # ✅ CRITICAL: Track expected audio end time BEFORE streaming
-        chunk_count_estimate = len(llm_response) / 15
-        expected_duration = (chunk_count_estimate * 0.02) + 0.5
-        audio_timing_ref['expected_end'] = time.time() + expected_duration
+        # ✅ CRITICAL: Set speaking flag, timing will be calculated after actual chunks
         audio_timing_ref['speaking'] = True
         
-        logger.info(f"🎤 Starting audio (expected {expected_duration:.1f}s)")
-        
         audio_task = asyncio.create_task(
-            stream_elevenlabs_audio_with_playback(
-                websocket, stream_sid, llm_response, stop_audio_flag
+            stream_elevenlabs_audio_with_playback_and_timing(
+                websocket, stream_sid, llm_response, stop_audio_flag, audio_timing_ref
             )
         )
         current_audio_task_ref['task'] = audio_task
@@ -1189,8 +1262,8 @@ Be conversational."""
         audio_timing_ref['expected_end'] = time.time() + 2.0
         
         error_task = asyncio.create_task(
-            stream_elevenlabs_audio_with_playback(
-                websocket, stream_sid, error_msg, stop_audio_flag
+            stream_elevenlabs_audio_with_playback_and_timing(
+                websocket, stream_sid, error_msg, stop_audio_flag, audio_timing_ref
             )
         )
         current_audio_task_ref['task'] = error_task
@@ -1502,10 +1575,11 @@ async def handle_outbound_stream(websocket: WebSocket):
                     stop_audio_flag['stop'] = False
                     
                     audio_timing_ref['speaking'] = True
-                    audio_timing_ref['expected_end'] = time.time() + 3.0
                     
                     current_audio_task = asyncio.create_task(
-                        stream_elevenlabs_audio_with_playback(websocket, stream_sid, farewell, stop_audio_flag)
+                        stream_elevenlabs_audio_with_playback_and_timing(
+                            websocket, stream_sid, farewell, stop_audio_flag, audio_timing_ref
+                        )
                     )
                     current_audio_task_ref['task'] = current_audio_task
                     
@@ -1575,25 +1649,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 current_processing_task = None
                 current_audio_task_ref['task'] = None
         
-        # ✅ INSTANT GREETING WITH PARALLEL DEEPGRAM INIT
-        if first_message_data and first_message_data.get("event") == "start":
-            stream_sid = first_message_data.get("streamSid")
-            logger.info(f"✅ Stream started: {stream_sid}")
-            logger.info(f"🚀 INSTANT GREETING - Starting audio NOW")
-            
-            audio_timing_ref['speaking'] = True
-            audio_timing_ref['expected_end'] = time.time() + 3.0
-            stop_audio_flag['stop'] = False
-            greeting_start_time = datetime.utcnow()
-            
-            current_audio_task = asyncio.create_task(
-                stream_elevenlabs_audio_with_playback(websocket, stream_sid, greeting, stop_audio_flag)
-            )
-            current_audio_task_ref['task'] = current_audio_task
-            
-            greeting_sent = True
-        
-        # ✅ Initialize Deepgram IN PARALLEL (non-blocking)
+        # ✅ Initialize Deepgram IMMEDIATELY (don't wait for greeting)
         session_id = f"deepgram_{call_sid}"
         logger.info(f"🎙️ Initializing Deepgram in background...")
         
@@ -1605,31 +1661,9 @@ async def handle_outbound_stream(websocket: WebSocket):
             )
         )
         
-        # ✅ Wait for greeting to finish
-        if current_audio_task:
-            try:
-                await current_audio_task
-                logger.info("✅ Greeting completed")
-            except asyncio.CancelledError:
-                pass
-            finally:
-                audio_timing_ref['speaking'] = False
-                audio_timing_ref['expected_end'] = 0
-                current_audio_task = None
-                current_audio_task_ref['task'] = None
-            
-            await asyncio.sleep(0.5)
+        # Message loop - greeting will be sent on FIRST "start" event
+        logger.info("📡 Entering message loop...")
         
-        # ✅ Make sure Deepgram is ready
-        deepgram_connected = await deepgram_task
-        
-        if not deepgram_connected:
-            await websocket.close()
-            return
-        
-        logger.info(f"✅ Deepgram ready (initialized in background)")
-        
-        # Message loop
         while True:
             try:
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
@@ -1639,31 +1673,38 @@ async def handle_outbound_stream(websocket: WebSocket):
                 if event == "start":
                     if not greeting_sent:
                         stream_sid = data.get("streamSid")
+                        logger.info(f"✅ Stream started: {stream_sid}")
+                        logger.info(f"🚀 INSTANT GREETING - Starting audio NOW")
                         
-                        is_agent_speaking = True
+                        # Make sure Deepgram is ready first
+                        if not deepgram_task.done():
+                            logger.info("⏳ Waiting for Deepgram...")
+                            await deepgram_task
+                        
+                        audio_timing_ref['speaking'] = True
                         stop_audio_flag['stop'] = False
                         greeting_start_time = datetime.utcnow()
                         
-                        audio_timing_ref['speaking'] = True
-                        audio_timing_ref['expected_end'] = time.time() + 3.0
-                        
                         current_audio_task = asyncio.create_task(
-                            stream_elevenlabs_audio_with_playback(websocket, stream_sid, greeting, stop_audio_flag)
+                            stream_elevenlabs_audio_with_playback_and_timing(
+                                websocket, stream_sid, greeting, stop_audio_flag, audio_timing_ref
+                            )
                         )
                         current_audio_task_ref['task'] = current_audio_task
                         
                         try:
                             await current_audio_task
+                            logger.info("✅ Greeting completed")
                         except:
                             pass
                         finally:
-                            is_agent_speaking = False
                             audio_timing_ref['speaking'] = False
                             audio_timing_ref['expected_end'] = 0
                             current_audio_task = None
                             current_audio_task_ref['task'] = None
                         
                         greeting_sent = True
+                        await asyncio.sleep(0.5)
                 
                 elif event == "media":
                     payload = data.get("media", {}).get("payload")
