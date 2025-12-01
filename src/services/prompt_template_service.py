@@ -3,6 +3,7 @@
 import logging
 from typing import Dict, List, Optional
 import json
+from services.company_service import company_service
 
 logger = logging.getLogger(__name__)
 
@@ -424,50 +425,19 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
         else:
             return None
     
-    def _extract_name_from_prompt(self, prompt: str) -> str:
-        """Extract AI name from prompt"""
-        try:
-            if "You are" in prompt:
-                parts = prompt.split("You are")[1].split(",")[0].strip()
-                name = parts.split()[0]
-                return name
-            return "Sarah"
-        except:
-            return "Sarah"
-    
-    def _extract_company_name(self, agent_name: str, business_context: str) -> str:
+    def _extract_company_name(self, company_id) -> str:
         """Extract company name"""
-        try:
-            if "Master Agent" in agent_name:
-                company = agent_name.replace("Master Agent", "").strip()
-                if company:
-                    return company
-            
-            if business_context:
-                for keyword in ["at ", "from "]:
-                    if keyword in business_context:
-                        parts = business_context.split(keyword)
-                        if len(parts) > 1:
-                            next_words = parts[1].split()[0:2]
-                            company = " ".join(next_words).rstrip(",.")
-                            if company and len(company) > 2:
-                                return company
-            
-            return "our company"
-        except:
-            return "our company"
+        return company_service.get_company_name_by_id(company_id)
     
-    def generate_greeting(self, agent: Dict) -> str:
+    def generate_greeting(self, agent: Dict, company_id) -> str:
         """Generate greeting for incoming calls"""
         try:
-            ai_name = self._extract_name_from_prompt(agent.get('prompt', ''))
             additional_context = agent.get('additional_context', {})
             company_name = self._extract_company_name(
-                agent.get('name', ''),
-                additional_context.get('businessContext', '')
+                company_id
             )
             
-            return f"Hello! This is {ai_name} from {company_name}. How may I help you today?"
+            return f"Hello! Thank you for calling {company_name}'s Customer Support. How may I help you today?"
         except:
             return "Hello! How may I help you today?"
 
