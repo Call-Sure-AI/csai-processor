@@ -1304,6 +1304,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     
     # Fetch master agent config
     master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
+    agent_name = master_agent["name"]
     current_agent_context = master_agent
     
     call_metadata = {
@@ -1330,7 +1331,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     company_name = company_service.get_company_name_by_id(company_id)
     
     greeting = (
-        f"Hello {customer_name}! This is calling from {company_name}. "
+        f"Hello {customer_name}! This is {agent_name} calling from {company_name}. "
         f"I'm reaching out because we offer {business_context}. "
         f"Would you be interested in learning more about this?"
     )
