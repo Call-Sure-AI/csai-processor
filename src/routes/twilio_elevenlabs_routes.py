@@ -185,13 +185,6 @@ async def stream_elevenlabs_audio_with_playback(
 ):
     """
     Stream audio with ULTRA-FAST interruption checking.
-    
-    Args:
-        websocket: Twilio WebSocket connection
-        stream_sid: Twilio stream SID
-        text: Text to synthesize
-        stop_flag_ref: Dict with 'stop' key to signal interruption
-        is_speaking_ref: Optional dict with 'speaking' key to track state
     """
     if not stream_sid:
         logger.error("No stream_sid")
@@ -205,16 +198,21 @@ async def stream_elevenlabs_audio_with_playback(
         # ✅ CHECK BEFORE STARTING
         if stop_flag_ref.get('stop', False):
             logger.warning("🛑 Stop flag already set - aborting audio")
-            await send_clear_to_twilio(websocket, stream_sid)
             return
         
         # Stream audio chunks with interruption checking
         async for audio_chunk in elevenlabs_service.generate(text):
-            # ✅ CHECK STOP FLAG BEFORE EVERY CHUNK (fastest possible)
+            # ✅ CHECK STOP FLAG BEFORE EVERY CHUNK
             if stop_flag_ref.get('stop', False):
-                logger.warning(f"🛑 STOP FLAG - Halting at chunk {chunk_count}")
-                await send_clear_to_twilio(websocket, stream_sid)
-                raise asyncio.CancelledError()
+                logger.warning(f"🛑 STOP FLAG DETECTED at chunk {chunk_count} - halting immediately!")
+                # Send clear command
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    logger.info("✅ CLEAR sent during chunk streaming")
+                except:
+                    pass
+                return  # Don't raise, just return
             
             if audio_chunk and stream_sid:
                 message = {
@@ -227,19 +225,25 @@ async def stream_elevenlabs_audio_with_playback(
         
         logger.info(f"✓ Sent {chunk_count} chunks to Twilio")
         
-        # Calculate playback duration
-        playback_duration = (chunk_count * 0.02) + 0.3  # Reduced buffer
-        logger.info(f"⏳ Simulating playback: {playback_duration:.1f}s")
+        # Calculate playback duration - Twilio buffers more than we expect!
+        # Each chunk is ~20ms, but add extra buffer for Twilio's playback delay
+        playback_duration = (chunk_count * 0.025) + 1.0  # More conservative estimate
+        logger.info(f"⏳ Simulating playback: {playback_duration:.1f}s (chunks: {chunk_count})")
         
         # ✅ ULTRA-FAST interruption check during playback (10ms intervals)
         elapsed = 0
-        check_interval = 0.01  # 10ms for instant response
+        check_interval = 0.01  # 10ms
         
         while elapsed < playback_duration:
             if stop_flag_ref.get('stop', False):
-                logger.warning(f"🛑 STOP FLAG during playback at {elapsed:.2f}s")
-                await send_clear_to_twilio(websocket, stream_sid)
-                raise asyncio.CancelledError()
+                logger.warning(f"🛑 STOP FLAG during playback at {elapsed:.2f}s - sending CLEAR")
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    logger.info("✅ CLEAR sent during playback simulation")
+                except:
+                    pass
+                return  # Don't raise, just return
             
             await asyncio.sleep(check_interval)
             elapsed += check_interval
@@ -247,15 +251,22 @@ async def stream_elevenlabs_audio_with_playback(
         logger.info(f"✓ Playback completed: {playback_duration:.1f}s")
         
     except asyncio.CancelledError:
-        logger.warning(f"🛑 Audio cancelled at chunk {chunk_count}")
-        await send_clear_to_twilio(websocket, stream_sid)
+        logger.warning(f"🛑 Audio task CANCELLED at chunk {chunk_count}")
+        # Send clear on cancellation
+        try:
+            clear_message = {"event": "clear", "streamSid": stream_sid}
+            await websocket.send_json(clear_message)
+            logger.info("✅ CLEAR sent on task cancellation")
+        except:
+            pass
         raise
     except Exception as e:
         logger.error(f"Error streaming audio: {e}")
     finally:
-        # Reset speaking flag if provided
+        # Always reset speaking flag if provided
         if is_speaking_ref:
             is_speaking_ref['speaking'] = False
+            logger.debug("Speaking flag reset to FALSE")
 
 
 @router.websocket("/media-stream")
@@ -386,30 +397,43 @@ async def handle_media_stream(websocket: WebSocket):
     try:
         # ✅ INSTANT INTERRUPTION CALLBACK
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
-            """🚨 INSTANT interruption"""
+            """🚨 INSTANT interruption - ALWAYS clear Twilio buffer"""
             nonlocal stream_sid
-            
-            if not is_agent_speaking_ref['speaking']:
-                return
+            nonlocal current_audio_task
             
             word_count = len(transcript.split())
-            if word_count >= 2:
-                logger.warning(f"🚨 INTERRUPTION: '{transcript}' (is_speaking={is_agent_speaking_ref['speaking']})")
-                
-                # ✅ STEP 1: Send CLEAR command IMMEDIATELY
-                await send_clear_to_twilio(websocket, stream_sid)
-                
-                # ✅ STEP 2: Set stop flag
-                stop_audio_flag['stop'] = True
-                
-                # ✅ STEP 3: Mark as not speaking
-                is_agent_speaking_ref['speaking'] = False
-                
-                # ✅ STEP 4: Cancel tasks
-                if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
-                    current_audio_task_ref['task'].cancel()
-                
-                logger.info("✅ Interruption handled")
+            if word_count < 2:
+                return
+            
+            is_speaking = is_agent_speaking_ref['speaking']
+            logger.info(f"🎯 INTERRUPT CHECK: '{transcript[:30]}' | is_speaking={is_speaking} | stream_sid={stream_sid}")
+            
+            # ✅ ALWAYS send CLEAR to Twilio - even if we think we're not speaking
+            # Twilio might still be playing from its buffer!
+            if stream_sid:
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    logger.info(f"✅ CLEAR sent to Twilio for {stream_sid}")
+                except Exception as e:
+                    logger.error(f"Failed to send CLEAR: {e}")
+            
+            if not is_speaking:
+                logger.debug(f"Agent wasn't speaking, but cleared Twilio buffer anyway")
+                return
+            
+            logger.warning(f"🚨 INTERRUPTING AGENT! '{transcript}'")
+            
+            # ✅ Set flags to stop any loops
+            stop_audio_flag['stop'] = True
+            is_agent_speaking_ref['speaking'] = False
+            
+            # ✅ Cancel audio task
+            if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
+                logger.info(f"⚡ Cancelling audio task...")
+                current_audio_task_ref['task'].cancel()
+            
+            logger.info("✅ Interruption complete - ready for user")
         
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
@@ -1430,30 +1454,46 @@ async def handle_outbound_stream(websocket: WebSocket):
     try:
         # ✅ INTERRUPTION CALLBACK
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
-            """🚨 INSTANT interruption"""
+            """🚨 INSTANT interruption - ALWAYS clear Twilio buffer"""
             nonlocal stream_sid
-            
-            if not is_agent_speaking_ref['speaking']:
-                return
+            nonlocal current_audio_task
             
             word_count = len(transcript.split())
-            if word_count >= 2:
-                logger.warning(f"🚨 INTERRUPTION: '{transcript}' (is_speaking={is_agent_speaking_ref['speaking']})")
-                
-                # ✅ STEP 1: Send CLEAR command IMMEDIATELY
-                await send_clear_to_twilio(websocket, stream_sid)
-                
-                # ✅ STEP 2: Set stop flag
-                stop_audio_flag['stop'] = True
-                
-                # ✅ STEP 3: Mark as not speaking
-                is_agent_speaking_ref['speaking'] = False
-                
-                # ✅ STEP 4: Cancel tasks
-                if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
-                    current_audio_task_ref['task'].cancel()
-                
-                logger.info("✅ Interruption handled")
+            if word_count < 2:
+                return
+            
+            is_speaking = is_agent_speaking_ref['speaking']
+            logger.info(f"🎯 INTERRUPT CHECK: '{transcript[:30]}' | is_speaking={is_speaking} | stream_sid={stream_sid}")
+            
+            # ✅ ALWAYS send CLEAR to Twilio - even if we think we're not speaking
+            # Twilio might still be playing from its buffer!
+            if stream_sid:
+                try:
+                    clear_message = {"event": "clear", "streamSid": stream_sid}
+                    await websocket.send_json(clear_message)
+                    logger.info(f"✅ CLEAR sent to Twilio for {stream_sid}")
+                except Exception as e:
+                    logger.error(f"Failed to send CLEAR: {e}")
+            
+            if not is_speaking:
+                logger.debug(f"Agent wasn't speaking, but cleared Twilio buffer anyway")
+                return
+            
+            logger.warning(f"🚨 INTERRUPTING AGENT! '{transcript}'")
+            
+            # ✅ Set flags to stop any loops
+            stop_audio_flag['stop'] = True
+            is_agent_speaking_ref['speaking'] = False
+            
+            # ✅ Cancel audio task
+            if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
+                logger.info(f"⚡ Cancelling audio task...")
+                current_audio_task_ref['task'].cancel()
+            
+            if current_audio_task and not current_audio_task.done():
+                current_audio_task.cancel()
+            
+            logger.info("✅ Interruption complete - ready for user")
         
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
