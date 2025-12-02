@@ -87,9 +87,15 @@ class DeepgramWebSocketService:
                     confidence = getattr(result.channel.alternatives[0], 'confidence', 0.0)
                     
                     if result.is_final:
-                        # FINAL transcript - fire and forget to not block Deepgram
+                        # FINAL transcript
                         logger.info(f"📝 Final: '{sentence}'")
-                        asyncio.create_task(self._safe_callback(callback, session_id, sentence))
+                        session["last_interim_text"] = ""
+                        session["interruption_cooldown"] = False
+                        # Call directly - route handler handles non-blocking
+                        try:
+                            await callback(session_id, sentence)
+                        except Exception as e:
+                            logger.error(f"Callback error: {e}")
                     else:
                         # INTERIM transcript - for interruption detection
                         word_count = len(sentence.split())
@@ -100,7 +106,6 @@ class DeepgramWebSocketService:
                             
                             # Trigger interruption callback
                             if interruption_callback and word_count >= 2:
-                                # Use confidence threshold, but also accept 0.0 (some versions don't provide it)
                                 confidence_threshold = 0.3
                                 
                                 if confidence == 0.0 or confidence >= confidence_threshold:
@@ -109,12 +114,11 @@ class DeepgramWebSocketService:
                                     # Set cooldown to prevent rapid-fire
                                     session["interruption_cooldown"] = True
                                     
-                                    # Fire and forget - NEVER block!
-                                    asyncio.create_task(
-                                        self._safe_interruption_callback(
-                                            interruption_callback, session_id, sentence, confidence
-                                        )
-                                    )
+                                    # Fire interruption - must be fast!
+                                    try:
+                                        await interruption_callback(session_id, sentence, confidence)
+                                    except Exception as e:
+                                        logger.error(f"Interruption callback error: {e}")
                                     
                                     # Reset cooldown after short delay
                                     asyncio.create_task(self._reset_cooldown(session_id))
@@ -123,11 +127,6 @@ class DeepgramWebSocketService:
                     logger.error(f"Error in on_message: {str(e)}")
                     import traceback
                     logger.error(traceback.format_exc())
-            
-            async def _reset_cooldown_inner():
-                await asyncio.sleep(0.5)
-                if session_id in self.sessions:
-                    self.sessions[session_id]["interruption_cooldown"] = False
             
             async def on_metadata(*args, **kwargs):
                 logger.debug(f"Metadata received")
@@ -207,24 +206,6 @@ class DeepgramWebSocketService:
         if session_id in self.sessions:
             self.sessions[session_id]["interruption_cooldown"] = False
             self.sessions[session_id]["last_interim_text"] = ""
-    
-    async def _safe_callback(self, callback, session_id: str, transcript: str):
-        """Safely execute callback without blocking"""
-        try:
-            # Reset state on final transcript
-            if session_id in self.sessions:
-                self.sessions[session_id]["last_interim_text"] = ""
-                self.sessions[session_id]["interruption_cooldown"] = False
-            await callback(session_id, transcript)
-        except Exception as e:
-            logger.error(f"Callback error: {e}")
-    
-    async def _safe_interruption_callback(self, callback, session_id: str, transcript: str, confidence: float):
-        """Safely execute interruption callback without blocking"""
-        try:
-            await callback(session_id, transcript, confidence)
-        except Exception as e:
-            logger.error(f"Interruption callback error: {e}")
     
     async def convert_twilio_audio(self, payload: str, session_id: str) -> bytes:
         """
