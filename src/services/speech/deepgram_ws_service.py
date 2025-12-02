@@ -1,3 +1,5 @@
+# src/services/speech/deepgram_ws_service.py - FIXED VERSION
+
 import asyncio
 import json
 import logging
@@ -13,6 +15,7 @@ from deepgram import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 class DeepgramWebSocketService:
     def __init__(self):
@@ -44,7 +47,7 @@ class DeepgramWebSocketService:
 
             logger.info(f"Initializing Deepgram session {session_id}")
             
-            # Initialize Deepgram client
+            # Initialize Deepgram client with keepalive
             config = DeepgramClientOptions(
                 options={"keepalive": "true"}
             )
@@ -58,63 +61,99 @@ class DeepgramWebSocketService:
                 "connected": False,
                 "callback": callback,
                 "interruption_callback": interruption_callback,
+                "last_interim_text": "",  # Track to avoid duplicate interruptions
+                "interruption_cooldown": False,  # Prevent rapid-fire interruptions
             }
             self.sessions[session_id] = session
             
-            # Event handlers
-            async def on_open(self_inner, open_event, **kwargs):
+            # ✅ FIX: Event handlers with flexible signatures to handle SDK variations
+            async def on_open(*args, **kwargs):
                 logger.info(f"✅ Deepgram connected: {session_id}")
                 session["connected"] = True
             
-            async def on_message(self_inner, result, **kwargs):
+            async def on_message(*args, **kwargs):
                 try:
+                    # Handle both positional and keyword arguments
+                    result = args[1] if len(args) > 1 else kwargs.get('result')
+                    if result is None:
+                        return
+                    
                     sentence = result.channel.alternatives[0].transcript
                     
                     if len(sentence) == 0:
                         return
                     
                     # Get confidence score
-                    confidence = result.channel.alternatives[0].confidence if hasattr(result.channel.alternatives[0], 'confidence') else 0.0
+                    confidence = getattr(result.channel.alternatives[0], 'confidence', 0.0)
                     
                     if result.is_final:
                         # FINAL transcript - always process
                         logger.info(f"📝 Final: '{sentence}'")
+                        session["last_interim_text"] = ""  # Reset
+                        session["interruption_cooldown"] = False
                         await callback(session_id, sentence)
                     else:
-                        # INTERIM transcript - check for interruption
+                        # INTERIM transcript - for interruption detection
                         word_count = len(sentence.split())
                         
-                        # Log ALL interim transcripts for debugging
-                        logger.debug(f"⚡ Interim: '{sentence}' (words: {word_count}, conf: {confidence:.2f})")
-                        
-                        # Trigger interruption callback if conditions met
-                        if interruption_callback:
-                            confidence_threshold = 0.3  # Lowered from 0.5 for faster detection
+                        # Only trigger if different from last interim (avoid duplicates)
+                        if sentence != session["last_interim_text"] and not session["interruption_cooldown"]:
+                            session["last_interim_text"] = sentence
                             
-                            if word_count >= 2 and (confidence == 0.0 or confidence >= confidence_threshold):
-                                logger.info(f"🎯 TRIGGERING INTERRUPTION: '{sentence}' ({word_count} words, conf: {confidence:.2f})")
-                                await interruption_callback(session_id, sentence, confidence)
+                            # Trigger interruption callback
+                            if interruption_callback and word_count >= 2:
+                                # Use confidence threshold, but also accept 0.0 (some versions don't provide it)
+                                confidence_threshold = 0.3
+                                
+                                if confidence == 0.0 or confidence >= confidence_threshold:
+                                    logger.info(f"🎯 TRIGGERING INTERRUPTION: '{sentence}' ({word_count} words, conf: {confidence:.2f})")
+                                    
+                                    # Set cooldown to prevent rapid-fire
+                                    session["interruption_cooldown"] = True
+                                    
+                                    # Fire interruption callback
+                                    try:
+                                        await interruption_callback(session_id, sentence, confidence)
+                                    except Exception as e:
+                                        logger.error(f"Interruption callback error: {e}")
+                                    
+                                    # Reset cooldown after short delay
+                                    asyncio.create_task(self._reset_cooldown(session_id))
                         
                 except Exception as e:
                     logger.error(f"Error in on_message: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             
-            async def on_metadata(self_inner, metadata, **kwargs):
+            async def _reset_cooldown_inner():
+                await asyncio.sleep(0.5)
+                if session_id in self.sessions:
+                    self.sessions[session_id]["interruption_cooldown"] = False
+            
+            async def on_metadata(*args, **kwargs):
                 logger.debug(f"Metadata received")
             
-            async def on_speech_started(self_inner, speech_started, **kwargs):
-                logger.debug(f"Speech started")
+            async def on_speech_started(*args, **kwargs):
+                logger.debug(f"🎤 Speech started detected")
             
-            async def on_utterance_end(self_inner, utterance_end, **kwargs):
+            async def on_utterance_end(*args, **kwargs):
                 logger.debug(f"Utterance ended")
+                # Reset cooldown on utterance end
+                if session_id in self.sessions:
+                    self.sessions[session_id]["interruption_cooldown"] = False
             
-            async def on_close(self_inner, close_event, **kwargs):
+            # ✅ FIX: Flexible signature for on_close
+            async def on_close(*args, **kwargs):
                 logger.info(f"Deepgram closed: {session_id}")
-                session["connected"] = False
+                if session_id in self.sessions:
+                    self.sessions[session_id]["connected"] = False
             
-            async def on_error(self_inner, error, **kwargs):
+            async def on_error(*args, **kwargs):
+                error = args[1] if len(args) > 1 else kwargs.get('error', 'Unknown error')
                 logger.error(f"Deepgram error: {error}")
             
-            async def on_unhandled(self_inner, unhandled, **kwargs):
+            async def on_unhandled(*args, **kwargs):
+                unhandled = args[1] if len(args) > 1 else kwargs.get('unhandled', '')
                 logger.debug(f"Unhandled event: {unhandled}")
             
             # Register all event handlers
@@ -127,7 +166,7 @@ class DeepgramWebSocketService:
             dg_connection.on(LiveTranscriptionEvents.Error, on_error)
             dg_connection.on(LiveTranscriptionEvents.Unhandled, on_unhandled)
             
-            # Configure live transcription options
+            # ✅ OPTIMIZED: Configure live transcription for FASTEST response
             options = LiveOptions(
                 model="nova-2",
                 language="en-US",
@@ -136,8 +175,10 @@ class DeepgramWebSocketService:
                 channels=1,
                 punctuate=True,
                 smart_format=True,
-                interim_results=True,  # ✅ ENABLED: For instant interruption
-                endpointing=300,
+                interim_results=True,  # ✅ CRITICAL: For instant interruption
+                endpointing=250,       # ✅ FASTER: Reduced from 300ms
+                utterance_end_ms=1000, # End utterance after 1s silence
+                vad_events=True,       # ✅ Voice Activity Detection events
             )
             
             # Start connection
@@ -145,7 +186,7 @@ class DeepgramWebSocketService:
                 logger.error(f"Failed to start Deepgram connection")
                 return False
             
-            # Wait for connection to be established
+            # Wait for connection with timeout
             for i in range(50):  # 5 seconds max
                 if session["connected"]:
                     logger.info(f"✅ Deepgram ready: {session_id}")
@@ -160,6 +201,12 @@ class DeepgramWebSocketService:
             import traceback
             logger.error(traceback.format_exc())
             return False
+    
+    async def _reset_cooldown(self, session_id: str):
+        """Reset interruption cooldown after delay"""
+        await asyncio.sleep(0.5)
+        if session_id in self.sessions:
+            self.sessions[session_id]["interruption_cooldown"] = False
     
     async def convert_twilio_audio(self, payload: str, session_id: str) -> bytes:
         """
@@ -182,6 +229,7 @@ class DeepgramWebSocketService:
             return b''
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes) -> bool:
+        """Send audio chunk to Deepgram for processing"""
         try:
             session = self.sessions.get(session_id)
             if not session or not session["connected"]:
@@ -196,6 +244,7 @@ class DeepgramWebSocketService:
             return False
     
     async def close_session(self, session_id: str):
+        """Close a Deepgram session"""
         session = self.sessions.pop(session_id, None)
         if session and session.get("connection"):
             try:
@@ -204,3 +253,8 @@ class DeepgramWebSocketService:
             except Exception as e:
                 logger.error(f"Error closing session: {str(e)}")
         return True
+    
+    def is_session_active(self, session_id: str) -> bool:
+        """Check if a session is active"""
+        session = self.sessions.get(session_id)
+        return session is not None and session.get("connected", False)
