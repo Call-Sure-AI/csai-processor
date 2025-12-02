@@ -87,11 +87,9 @@ class DeepgramWebSocketService:
                     confidence = getattr(result.channel.alternatives[0], 'confidence', 0.0)
                     
                     if result.is_final:
-                        # FINAL transcript - always process
+                        # FINAL transcript - fire and forget to not block Deepgram
                         logger.info(f"📝 Final: '{sentence}'")
-                        session["last_interim_text"] = ""  # Reset
-                        session["interruption_cooldown"] = False
-                        await callback(session_id, sentence)
+                        asyncio.create_task(self._safe_callback(callback, session_id, sentence))
                     else:
                         # INTERIM transcript - for interruption detection
                         word_count = len(sentence.split())
@@ -111,11 +109,12 @@ class DeepgramWebSocketService:
                                     # Set cooldown to prevent rapid-fire
                                     session["interruption_cooldown"] = True
                                     
-                                    # Fire interruption callback
-                                    try:
-                                        await interruption_callback(session_id, sentence, confidence)
-                                    except Exception as e:
-                                        logger.error(f"Interruption callback error: {e}")
+                                    # Fire and forget - NEVER block!
+                                    asyncio.create_task(
+                                        self._safe_interruption_callback(
+                                            interruption_callback, session_id, sentence, confidence
+                                        )
+                                    )
                                     
                                     # Reset cooldown after short delay
                                     asyncio.create_task(self._reset_cooldown(session_id))
@@ -207,6 +206,25 @@ class DeepgramWebSocketService:
         await asyncio.sleep(0.5)
         if session_id in self.sessions:
             self.sessions[session_id]["interruption_cooldown"] = False
+            self.sessions[session_id]["last_interim_text"] = ""
+    
+    async def _safe_callback(self, callback, session_id: str, transcript: str):
+        """Safely execute callback without blocking"""
+        try:
+            # Reset state on final transcript
+            if session_id in self.sessions:
+                self.sessions[session_id]["last_interim_text"] = ""
+                self.sessions[session_id]["interruption_cooldown"] = False
+            await callback(session_id, transcript)
+        except Exception as e:
+            logger.error(f"Callback error: {e}")
+    
+    async def _safe_interruption_callback(self, callback, session_id: str, transcript: str, confidence: float):
+        """Safely execute interruption callback without blocking"""
+        try:
+            await callback(session_id, transcript, confidence)
+        except Exception as e:
+            logger.error(f"Interruption callback error: {e}")
     
     async def convert_twilio_audio(self, payload: str, session_id: str) -> bytes:
         """

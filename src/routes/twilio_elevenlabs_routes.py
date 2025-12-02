@@ -386,7 +386,7 @@ async def handle_media_stream(websocket: WebSocket):
     try:
         # ✅ INSTANT INTERRUPTION CALLBACK
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
-            """🚨 INSTANT interruption - fires on interim transcripts"""
+            """🚨 INSTANT interruption - must return quickly!"""
             nonlocal stream_sid
             
             if not is_agent_speaking_ref['speaking']:
@@ -396,29 +396,36 @@ async def handle_media_stream(websocket: WebSocket):
             if word_count >= 2:
                 logger.warning(f"🚨 INTERRUPTION: '{transcript}' (is_speaking={is_agent_speaking_ref['speaking']})")
                 
-                # ✅ STEP 1: Send CLEAR command IMMEDIATELY (before anything else)
-                await send_clear_to_twilio(websocket, stream_sid)
-                
-                # ✅ STEP 2: Set stop flag
-                stop_audio_flag['stop'] = True
-                
-                # ✅ STEP 3: Mark as not speaking
-                is_agent_speaking_ref['speaking'] = False
-                
-                # ✅ STEP 4: Cancel tasks
-                if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
-                    current_audio_task_ref['task'].cancel()
-                    try:
-                        await asyncio.wait_for(current_audio_task_ref['task'], timeout=0.1)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
-                
-                # Small delay for Twilio to process clear
-                await asyncio.sleep(0.2)
-                
-                # Reset flag for next response
-                stop_audio_flag['stop'] = False
-                logger.info("✅ Ready for customer input")
+                # ✅ Fire and forget - don't block Deepgram!
+                asyncio.create_task(_handle_interruption_incoming())
+        
+        async def _handle_interruption_incoming():
+            """Handle interruption in background"""
+            nonlocal stream_sid
+            
+            # ✅ STEP 1: Send CLEAR command IMMEDIATELY
+            await send_clear_to_twilio(websocket, stream_sid)
+            
+            # ✅ STEP 2: Set stop flag
+            stop_audio_flag['stop'] = True
+            
+            # ✅ STEP 3: Mark as not speaking
+            is_agent_speaking_ref['speaking'] = False
+            
+            # ✅ STEP 4: Cancel tasks
+            if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
+                current_audio_task_ref['task'].cancel()
+                try:
+                    await asyncio.wait_for(current_audio_task_ref['task'], timeout=0.1)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            # Small delay for Twilio to process clear
+            await asyncio.sleep(0.2)
+            
+            # Reset flag for next response
+            stop_audio_flag['stop'] = False
+            logger.info("✅ Ready for customer input")
         
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
@@ -439,6 +446,24 @@ async def handle_media_stream(websocket: WebSocket):
                     return
             
             logger.info(f"👤 CUSTOMER SAID: '{transcript}'")
+            
+            # ✅ CRITICAL: Don't block this callback - Deepgram needs it to return quickly!
+            # Fire off processing as a background task
+            asyncio.create_task(
+                _handle_customer_message_incoming(
+                    transcript=transcript,
+                    session_id=session_id
+                )
+            )
+            # Return immediately so Deepgram can continue processing audio!
+        
+        async def _handle_customer_message_incoming(transcript: str, session_id: str):
+            """Handle customer message in background - doesn't block Deepgram"""
+            nonlocal conversation_transcript
+            nonlocal current_agent_context
+            nonlocal current_audio_task
+            nonlocal current_processing_task
+            nonlocal stop_audio_flag
             
             # Save to transcript
             conversation_transcript.append({
@@ -1442,7 +1467,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     try:
         # ✅ INTERRUPTION CALLBACK
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
-            """🚨 INSTANT interruption"""
+            """🚨 INSTANT interruption - must return quickly!"""
             nonlocal stream_sid
             
             if not is_agent_speaking_ref['speaking']:
@@ -1452,32 +1477,39 @@ async def handle_outbound_stream(websocket: WebSocket):
             if word_count >= 2:
                 logger.warning(f"🚨 INTERRUPTION: '{transcript}' (is_speaking={is_agent_speaking_ref['speaking']})")
                 
-                # ✅ STEP 1: Send CLEAR command IMMEDIATELY
-                await send_clear_to_twilio(websocket, stream_sid)
-                
-                # ✅ STEP 2: Set stop flag
-                stop_audio_flag['stop'] = True
-                
-                # ✅ STEP 3: Mark as not speaking
-                is_agent_speaking_ref['speaking'] = False
-                
-                # ✅ STEP 4: Cancel tasks
-                if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
-                    current_audio_task_ref['task'].cancel()
-                    try:
-                        await asyncio.wait_for(current_audio_task_ref['task'], timeout=0.1)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
-                
-                if current_audio_task and not current_audio_task.done():
-                    current_audio_task.cancel()
-                
-                # Small delay for Twilio
-                await asyncio.sleep(0.2)
-                
-                # Reset flag
-                stop_audio_flag['stop'] = False
-                logger.info("✅ Ready for customer input")
+                # ✅ Fire and forget - don't block Deepgram!
+                asyncio.create_task(_handle_interruption_outbound())
+        
+        async def _handle_interruption_outbound():
+            """Handle interruption in background"""
+            nonlocal stream_sid
+            
+            # ✅ STEP 1: Send CLEAR command IMMEDIATELY
+            await send_clear_to_twilio(websocket, stream_sid)
+            
+            # ✅ STEP 2: Set stop flag
+            stop_audio_flag['stop'] = True
+            
+            # ✅ STEP 3: Mark as not speaking
+            is_agent_speaking_ref['speaking'] = False
+            
+            # ✅ STEP 4: Cancel tasks
+            if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
+                current_audio_task_ref['task'].cancel()
+                try:
+                    await asyncio.wait_for(current_audio_task_ref['task'], timeout=0.1)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            if current_audio_task and not current_audio_task.done():
+                current_audio_task.cancel()
+            
+            # Small delay for Twilio
+            await asyncio.sleep(0.2)
+            
+            # Reset flag
+            stop_audio_flag['stop'] = False
+            logger.info("✅ Ready for customer input")
         
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
@@ -1498,6 +1530,25 @@ async def handle_outbound_stream(websocket: WebSocket):
                     return
             
             logger.info(f"👤 CUSTOMER: '{transcript}'")
+            
+            # ✅ CRITICAL: Don't block this callback - Deepgram needs it to return quickly!
+            # Fire off processing as a background task
+            asyncio.create_task(
+                _handle_customer_message_outbound(
+                    transcript=transcript,
+                    session_id=session_id
+                )
+            )
+            # Return immediately so Deepgram can continue processing audio!
+        
+        async def _handle_customer_message_outbound(transcript: str, session_id: str):
+            """Handle customer message in background - doesn't block Deepgram"""
+            nonlocal conversation_transcript
+            nonlocal current_agent_context
+            nonlocal current_audio_task
+            nonlocal current_processing_task
+            nonlocal stop_audio_flag
+            nonlocal rejection_count
             
             # Detect intent
             intent_analysis = await intent_detection_service.detect_customer_intent(
