@@ -1239,9 +1239,6 @@ Be conversational."""
             raise
         finally:
             is_agent_speaking_ref['speaking'] = False
-            # ✅ Track when agent stopped speaking for grace period
-            import time
-            is_agent_speaking_ref['stopped_at'] = time.time()
             current_audio_task_ref['task'] = None
         
     except asyncio.CancelledError:
@@ -1354,10 +1351,6 @@ async def handle_outbound_stream(websocket: WebSocket):
     is_agent_speaking_ref = {'speaking': False}
     current_audio_task_ref = {'task': None}
     
-    # ✅ Track last processed time to prevent double-processing
-    last_processed_time = {'time': 0}
-    PROCESS_COOLDOWN = 2.0  # Don't process same speech twice within 2 seconds
-    
     if not call_sid:
         try:
             for attempt in range(3):
@@ -1458,8 +1451,6 @@ async def handle_outbound_stream(websocket: WebSocket):
         "interaction_count": 0
     }
     
-    GRACE_PERIOD = 1.0  # Process user speech within 1s of agent stopping
-    
     try:
         # ✅ INTERRUPTION CALLBACK
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
@@ -1472,15 +1463,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 return
             
             is_speaking = is_agent_speaking_ref['speaking']
-            
-            # ✅ Check if we're in the grace period (agent JUST stopped speaking)
-            import time
-            current_time = time.time()
-            stopped_at = is_agent_speaking_ref.get('stopped_at', 0)
-            time_since_agent_stopped = current_time - stopped_at if stopped_at > 0 else float('inf')
-            in_grace_period = time_since_agent_stopped < GRACE_PERIOD
-            
-            logger.info(f"🎯 INTERRUPT CHECK: '{transcript[:30]}' | is_speaking={is_speaking} | grace_period={in_grace_period} ({time_since_agent_stopped:.2f}s)")
+            logger.info(f"🎯 INTERRUPT CHECK: '{transcript[:30]}' | is_speaking={is_speaking} | stream_sid={stream_sid}")
             
             # ✅ ALWAYS send CLEAR to Twilio - even if we think we're not speaking
             # Twilio might still be playing from its buffer!
@@ -1492,60 +1475,25 @@ async def handle_outbound_stream(websocket: WebSocket):
                 except Exception as e:
                     logger.error(f"Failed to send CLEAR: {e}")
             
-            # ✅ Process if agent IS speaking OR within grace period
-            if is_speaking or in_grace_period:
-                logger.warning(f"🚨 INTERRUPTING AGENT! '{transcript}' (grace_period={in_grace_period})")
-                
-                # Set flags to stop any loops
-                stop_audio_flag['stop'] = True
-                is_agent_speaking_ref['speaking'] = False
-                
-                # Cancel audio task
-                if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
-                    logger.info(f"⚡ Cancelling audio task...")
-                    current_audio_task_ref['task'].cancel()
-                
-                if current_audio_task and not current_audio_task.done():
-                    current_audio_task.cancel()
-                
-                logger.info("✅ Interruption complete")
-                
-                # ✅ Process the interruption as user input (don't wait for final)
-                if word_count >= 3 and confidence >= 0.7:
-                    current_time = time.time()
-                    last_processed_time['time'] = current_time  # Mark that we're processing
-                    stop_audio_flag['stop'] = False  # Reset for new response
-                    logger.info(f"🎤 Processing interruption as user input: '{transcript}'")
-                    
-                    # Quick intent detection for interruption
-                    try:
-                        quick_intent = await intent_detection_service.detect_customer_intent(
-                            customer_message=transcript,
-                            conversation_history=conversation_transcript,
-                            call_type=call_type
-                        )
-                    except Exception as e:
-                        logger.warning(f"Quick intent failed: {e}")
-                        quick_intent = {'type': 'question', 'sentiment': 'neutral', 'buying_readiness': 50}
-                    
-                    asyncio.create_task(process_and_respond_outbound(
-                        transcript=transcript,
-                        websocket=websocket,
-                        stream_sid=stream_sid,
-                        stop_audio_flag=stop_audio_flag,
-                        db=db,
-                        call_sid=call_sid,
-                        current_agent_context=current_agent_context,
-                        current_agent_id=master_agent_id,
-                        company_id=company_id,
-                        conversation_transcript=conversation_transcript,
-                        intent_analysis=quick_intent,
-                        call_type=call_type,
-                        is_agent_speaking_ref=is_agent_speaking_ref,
-                        current_audio_task_ref=current_audio_task_ref
-                    ))
-            else:
-                logger.debug(f"Agent wasn't speaking and not in grace period")
+            if not is_speaking:
+                logger.debug(f"Agent wasn't speaking, but cleared Twilio buffer anyway")
+                return
+            
+            logger.warning(f"🚨 INTERRUPTING AGENT! '{transcript}'")
+            
+            # ✅ Set flags to stop any loops
+            stop_audio_flag['stop'] = True
+            is_agent_speaking_ref['speaking'] = False
+            
+            # ✅ Cancel audio task
+            if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
+                logger.info(f"⚡ Cancelling audio task...")
+                current_audio_task_ref['task'].cancel()
+            
+            if current_audio_task and not current_audio_task.done():
+                current_audio_task.cancel()
+            
+            logger.info("✅ Interruption complete - ready for user")
         
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
@@ -1564,20 +1512,6 @@ async def handle_outbound_stream(websocket: WebSocket):
                 elapsed = (datetime.utcnow() - greeting_start_time).total_seconds()
                 if elapsed < 2.5:
                     return
-            
-            # ✅ Check if we just processed this as an interruption (prevent double-processing)
-            import time
-            current_time = time.time()
-            time_since_last = current_time - last_processed_time['time']
-            if time_since_last < PROCESS_COOLDOWN:
-                logger.info(f"⏭️ Skipping final transcript - already processed as interruption {time_since_last:.1f}s ago")
-                # Still log the transcript but don't process
-                conversation_transcript.append({
-                    'role': 'user',
-                    'content': transcript,
-                    'timestamp': datetime.utcnow().isoformat()
-                })
-                return
             
             logger.info(f"👤 CUSTOMER: '{transcript}'")
             
