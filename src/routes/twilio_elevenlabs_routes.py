@@ -1321,7 +1321,10 @@ async def handle_outbound_connect(request: Request):
             "call_type": "outgoing"
         }
         
-        stream_url = f"wss://{ws_domain}/api/v1/twilio-elevenlabs/outbound-stream"
+        # ✅ CRITICAL FIX: ADD call_sid TO WEBSOCKET URL
+        stream_url = f"wss://{ws_domain}/api/v1/twilio-elevenlabs/outbound-stream?call_sid={call_sid}"
+        
+        logger.info(f"Stream URL: {stream_url}")
         
         connect.stream(url=stream_url)
         response.append(connect)
@@ -1370,40 +1373,19 @@ async def handle_outbound_stream(websocket: WebSocket):
     
     try:
         # ============================================
-        # STEP 1: GET CALL SID - LOOP THROUGH MESSAGES
+        # STEP 1: GET CALL SID FROM QUERY PARAMS
         # ============================================
-        logger.info("🚀 Waiting for Twilio events...")
+        logger.info("🚀 Starting initialization...")
         
-        # Loop through messages to find "start" event (skip "connected")
-        for attempt in range(3):
-            try:
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-                data = json.loads(message)
-                event_type = data.get("event")
-                
-                logger.info(f"📨 Received event #{attempt + 1}: {event_type}")
-                
-                if event_type == "connected":
-                    logger.info("✓ Connected event (skipping)")
-                    continue
-                    
-                elif event_type == "start":
-                    call_sid = data.get("start", {}).get("callSid")
-                    stream_sid = data.get("streamSid")
-                    logger.info(f"✅ Got call_sid: {call_sid}, stream_sid: {stream_sid}")
-                    break
-                    
-            except asyncio.TimeoutError:
-                logger.error(f"⏱️ Timeout on attempt #{attempt + 1}")
-                continue
-            except Exception as e:
-                logger.error(f"❌ Error on attempt #{attempt + 1}: {e}")
-                continue
+        # ✅ CRITICAL: Get call_sid from query params
+        call_sid = websocket.query_params.get("call_sid")
         
         if not call_sid:
-            logger.error("❌ Could not obtain call_sid after 3 attempts")
+            logger.error("❌ No call_sid in query params")
             await websocket.close()
             return
+        
+        logger.info(f"📞 Call SID: {call_sid}")
         
         # Get context from stored data
         context = call_context.get(call_sid, {})
@@ -1418,7 +1400,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             await websocket.close()
             return
         
-        logger.info(f"✅ Parameters OK - Company: {company_id}, Agent: {agent_id}, Customer: {customer_name}")
+        logger.info(f"✅ Parameters loaded - Company: {company_id}, Agent: {agent_id}, Customer: {customer_name}")
         
         # ============================================
         # STEP 2: PARALLEL INITIALIZATION
@@ -1453,8 +1435,8 @@ async def handle_outbound_stream(websocket: WebSocket):
         )
         
         init_duration = time.time() - init_start
-        logger.info(f"⚡ Init complete in {init_duration:.2f}s")
-        logger.info(f"💬 Greeting: '{greeting[:50]}...'")
+        logger.info(f"⚡ Initialization complete in {init_duration:.2f}s")
+        logger.info(f"💬 Greeting pre-generated: '{greeting[:50]}...'")
         
         call_metadata = {
             'start_time': datetime.utcnow(),
@@ -1490,7 +1472,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             
             word_count = len(transcript.split())
             if word_count >= 2:
-                logger.warning(f"🚨 INTERRUPTION: '{transcript}'")
+                logger.warning(f"🚨 INTERRUPTION: '{transcript}' (conf: {confidence:.2f})")
                 
                 stop_audio_flag['stop'] = True
                 
@@ -1630,10 +1612,10 @@ async def handle_outbound_stream(websocket: WebSocket):
                 current_audio_task_ref['task'] = None
         
         # ============================================
-        # STEP 4: INIT DEEPGRAM
+        # STEP 4: INIT DEEPGRAM (non-blocking)
         # ============================================
         session_id = f"deepgram_{call_sid}"
-        logger.info(f"🎙️ Initializing Deepgram...")
+        logger.info(f"🎙️ Initializing Deepgram in background...")
         
         deepgram_task = asyncio.create_task(
             deepgram_service.initialize_session(
@@ -1644,49 +1626,82 @@ async def handle_outbound_stream(websocket: WebSocket):
         )
         
         # ============================================
-        # STEP 5: GREETING
+        # STEP 5: GREETING FLOW
         # ============================================
         
-        if stream_sid:
-            logger.info(f"🚀 Playing greeting NOW")
-            
-            if not deepgram_task.done():
-                await deepgram_task
-            
-            audio_timing_ref['speaking'] = True
-            stop_audio_flag['stop'] = False
-            greeting_start_time = datetime.utcnow()
-            
-            current_audio_task = asyncio.create_task(
-                stream_elevenlabs_audio_with_playback_and_timing(
-                    websocket, stream_sid, greeting, stop_audio_flag, audio_timing_ref
-                )
-            )
-            current_audio_task_ref['task'] = current_audio_task
-            
+        # Wait for Twilio to send the "start" event with stream_sid
+        logger.info("📡 Waiting for 'start' event...")
+        
+        for attempt in range(3):
             try:
-                await current_audio_task
-                logger.info("✅ Greeting done")
-            except:
-                pass
-            finally:
-                audio_timing_ref['speaking'] = False
-                audio_timing_ref['expected_end'] = 0
-                current_audio_task = None
-                current_audio_task_ref['task'] = None
-            
-            greeting_sent = True
-            conversation_history.append({
-                "role": "assistant",
-                "content": greeting,
-                "timestamp": greeting_start_time.isoformat()
-            })
-            await asyncio.sleep(0.5)
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+                data = json.loads(message)
+                event_type = data.get("event")
+                
+                logger.info(f"📨 Event #{attempt + 1}: {event_type}")
+                
+                if event_type == "connected":
+                    continue
+                    
+                elif event_type == "start":
+                    stream_sid = data.get("streamSid")
+                    logger.info(f"✅ Stream started: {stream_sid}")
+                    break
+                    
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Timeout on attempt #{attempt + 1}")
+                continue
+        
+        if not stream_sid:
+            logger.error("❌ Could not get stream_sid")
+            await websocket.close()
+            return
+        
+        # Make sure Deepgram is ready
+        if not deepgram_task.done():
+            logger.info("⏳ Waiting for Deepgram...")
+            await deepgram_task
+        
+        logger.info("✅ Deepgram ready")
+        
+        # Play greeting
+        logger.info(f"🚀 INSTANT GREETING - Starting audio NOW")
+        audio_timing_ref['speaking'] = True
+        stop_audio_flag['stop'] = False
+        greeting_start_time = datetime.utcnow()
+        
+        current_audio_task = asyncio.create_task(
+            stream_elevenlabs_audio_with_playback_and_timing(
+                websocket, stream_sid, greeting, stop_audio_flag, audio_timing_ref
+            )
+        )
+        current_audio_task_ref['task'] = current_audio_task
+        
+        try:
+            await current_audio_task
+            logger.info("✅ Greeting completed")
+        except asyncio.CancelledError:
+            logger.info("⚠️ Greeting cancelled")
+        except Exception as e:
+            logger.error(f"❌ Greeting error: {e}")
+        finally:
+            audio_timing_ref['speaking'] = False
+            audio_timing_ref['expected_end'] = 0
+            current_audio_task = None
+            current_audio_task_ref['task'] = None
+        
+        greeting_sent = True
+        conversation_history.append({
+            "role": "assistant",
+            "content": greeting,
+            "timestamp": greeting_start_time.isoformat()
+        })
+        await asyncio.sleep(0.5)
         
         # ============================================
         # STEP 6: MESSAGE LOOP
         # ============================================
-        logger.info("📡 Message loop...")
+        logger.info("📡 Entering message loop...")
         
         while True:
             try:
@@ -1694,43 +1709,7 @@ async def handle_outbound_stream(websocket: WebSocket):
                 data = json.loads(message)
                 event = data.get("event")
                 
-                if event == "start":
-                    if not greeting_sent:
-                        stream_sid = data.get("streamSid")
-                        logger.info(f"🚀 Late greeting")
-                        
-                        if not deepgram_task.done():
-                            await deepgram_task
-                        
-                        audio_timing_ref['speaking'] = True
-                        greeting_start_time = datetime.utcnow()
-                        
-                        current_audio_task = asyncio.create_task(
-                            stream_elevenlabs_audio_with_playback_and_timing(
-                                websocket, stream_sid, greeting, stop_audio_flag, audio_timing_ref
-                            )
-                        )
-                        current_audio_task_ref['task'] = current_audio_task
-                        
-                        try:
-                            await current_audio_task
-                        except:
-                            pass
-                        finally:
-                            audio_timing_ref['speaking'] = False
-                            audio_timing_ref['expected_end'] = 0
-                            current_audio_task = None
-                            current_audio_task_ref['task'] = None
-                        
-                        greeting_sent = True
-                        conversation_history.append({
-                            "role": "assistant",
-                            "content": greeting,
-                            "timestamp": greeting_start_time.isoformat()
-                        })
-                        await asyncio.sleep(0.5)
-                
-                elif event == "media":
+                if event == "media":
                     payload = data.get("media", {}).get("payload")
                     if payload and session_id:
                         audio = await deepgram_service.convert_twilio_audio(payload, session_id)
@@ -1738,22 +1717,24 @@ async def handle_outbound_stream(websocket: WebSocket):
                             await deepgram_service.process_audio_chunk(session_id, audio)
                 
                 elif event == "stop":
+                    logger.info("🛑 Stream stopped")
                     break
             
             except asyncio.TimeoutError:
                 continue
             except WebSocketDisconnect:
+                logger.info("🔌 WebSocket disconnected")
                 break
             except Exception as e:
-                logger.error(f"❌ Loop error: {e}")
+                logger.error(f"❌ Error in message loop: {e}")
                 break
     
     except Exception as e:
-        logger.error(f"❌ Fatal: {e}")
+        logger.error(f"❌ Fatal error in outbound stream: {e}")
         logger.exception(e)
     
     finally:
-        logger.info(f"🧹 Cleanup")
+        logger.info(f"🧹 Cleanup for {call_sid}")
         
         if current_audio_task and not current_audio_task.done():
             current_audio_task.cancel()
