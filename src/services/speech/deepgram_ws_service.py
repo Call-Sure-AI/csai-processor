@@ -1,13 +1,9 @@
-# src/services/speech/deepgram_ws_service.py - ULTRA LOW LATENCY VERSION
-
-"""
-Deepgram WebSocket Service - Optimized for minimum latency
-Key changes:
-1. Faster endpointing (150ms vs 250ms)
-2. Shorter utterance end (700ms vs 1000ms)
-3. Smarter interruption detection
-4. Connection keepalive optimization
-"""
+# src/services/speech/deepgram_ws_service.py - FIXED VERSION
+#
+# FIX: Removed invalid parameters (no_delay, filler_words) that caused HTTP 400
+# SAFE OPTIMIZATIONS ONLY:
+# - endpointing: 150ms (was 250ms)
+# - utterance_end_ms: 700ms (was 1000ms)
 
 import asyncio
 import json
@@ -38,23 +34,31 @@ class DeepgramWebSocketService:
         interruption_callback: Optional[Callable[[str, str, float], Awaitable[None]]] = None
     ) -> bool:
         """
-        Initialize Deepgram session - OPTIMIZED FOR SPEED
+        Initialize Deepgram session with optional interruption detection.
+        
+        Args:
+            session_id: Unique session identifier
+            callback: Called with (session_id, transcript) for FINAL transcripts
+            interruption_callback: Called with (session_id, transcript, confidence) for INTERIM transcripts
         """
         try:
             if session_id in self.sessions:
+                logger.info(f"Closing existing session for {session_id}")
                 await self.close_session(session_id)
 
             if not self.deepgram_api_key:
-                logger.error("No Deepgram API key")
+                logger.error(f"No Deepgram API key found")
                 return False
 
-            logger.info(f"🎙️ Initializing Deepgram: {session_id}")
+            logger.info(f"Initializing Deepgram session {session_id}")
             
-            # ✅ OPTIMIZATION: Keepalive for persistent connection
+            # Initialize Deepgram client with keepalive
             config = DeepgramClientOptions(
                 options={"keepalive": "true"}
             )
             deepgram = DeepgramClient(self.deepgram_api_key, config)
+            
+            # Create live transcription connection
             dg_connection = deepgram.listen.asynclive.v("1")
             
             session = {
@@ -64,11 +68,10 @@ class DeepgramWebSocketService:
                 "interruption_callback": interruption_callback,
                 "last_interim_text": "",
                 "interruption_cooldown": False,
-                "last_interrupt_time": 0,
             }
             self.sessions[session_id] = session
             
-            # Event handlers
+            # Event handlers with flexible signatures
             async def on_open(*args, **kwargs):
                 logger.info(f"✅ Deepgram connected: {session_id}")
                 session["connected"] = True
@@ -80,7 +83,8 @@ class DeepgramWebSocketService:
                         return
                     
                     sentence = result.channel.alternatives[0].transcript
-                    if not sentence:
+                    
+                    if len(sentence) == 0:
                         return
                     
                     confidence = getattr(result.channel.alternatives[0], 'confidence', 0.0)
@@ -90,44 +94,45 @@ class DeepgramWebSocketService:
                         logger.info(f"📝 Final: '{sentence}'")
                         session["last_interim_text"] = ""
                         session["interruption_cooldown"] = False
-                        
-                        # ✅ Fire callback without blocking
-                        asyncio.create_task(self._safe_callback(callback, session_id, sentence))
+                        try:
+                            await callback(session_id, sentence)
+                        except Exception as e:
+                            logger.error(f"Callback error: {e}")
                     else:
-                        # INTERIM - for interruption
+                        # INTERIM transcript - for interruption detection
                         word_count = len(sentence.split())
                         
-                        if (sentence != session["last_interim_text"] and 
-                            not session["interruption_cooldown"] and
-                            word_count >= 2):
-                            
+                        if sentence != session["last_interim_text"] and not session["interruption_cooldown"]:
                             session["last_interim_text"] = sentence
                             
-                            if interruption_callback:
-                                # ✅ FASTER: Lower confidence threshold
-                                if confidence == 0.0 or confidence >= 0.25:
-                                    logger.info(f"🎯 INTERRUPT: '{sentence}' (conf: {confidence:.2f})")
+                            if interruption_callback and word_count >= 2:
+                                confidence_threshold = 0.3
+                                
+                                if confidence == 0.0 or confidence >= confidence_threshold:
+                                    logger.info(f"🎯 TRIGGERING INTERRUPTION: '{sentence}' ({word_count} words, conf: {confidence:.2f})")
+                                    
                                     session["interruption_cooldown"] = True
                                     
-                                    # Fire interruption immediately
-                                    asyncio.create_task(
-                                        self._safe_interrupt_callback(
-                                            interruption_callback, session_id, sentence, confidence
-                                        )
-                                    )
+                                    try:
+                                        await interruption_callback(session_id, sentence, confidence)
+                                    except Exception as e:
+                                        logger.error(f"Interruption callback error: {e}")
                                     
-                                    # Shorter cooldown
-                                    asyncio.create_task(self._reset_cooldown(session_id, 0.3))
+                                    asyncio.create_task(self._reset_cooldown(session_id))
                         
                 except Exception as e:
-                    logger.error(f"on_message error: {e}")
+                    logger.error(f"Error in on_message: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            async def on_metadata(*args, **kwargs):
+                logger.debug(f"Metadata received")
             
             async def on_speech_started(*args, **kwargs):
-                """✅ NEW: Immediate interruption on speech detection"""
-                logger.debug("🎤 Speech started")
-                # Could trigger pre-emptive clear here if needed
+                logger.debug(f"🎤 Speech started detected")
             
             async def on_utterance_end(*args, **kwargs):
+                logger.debug(f"Utterance ended")
                 if session_id in self.sessions:
                     self.sessions[session_id]["interruption_cooldown"] = False
             
@@ -137,18 +142,24 @@ class DeepgramWebSocketService:
                     self.sessions[session_id]["connected"] = False
             
             async def on_error(*args, **kwargs):
-                error = args[1] if len(args) > 1 else kwargs.get('error', 'Unknown')
+                error = args[1] if len(args) > 1 else kwargs.get('error', 'Unknown error')
                 logger.error(f"Deepgram error: {error}")
             
-            # Register handlers
+            async def on_unhandled(*args, **kwargs):
+                unhandled = args[1] if len(args) > 1 else kwargs.get('unhandled', '')
+                logger.debug(f"Unhandled event: {unhandled}")
+            
+            # Register all event handlers
             dg_connection.on(LiveTranscriptionEvents.Open, on_open)
             dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
+            dg_connection.on(LiveTranscriptionEvents.Metadata, on_metadata)
             dg_connection.on(LiveTranscriptionEvents.SpeechStarted, on_speech_started)
             dg_connection.on(LiveTranscriptionEvents.UtteranceEnd, on_utterance_end)
             dg_connection.on(LiveTranscriptionEvents.Close, on_close)
             dg_connection.on(LiveTranscriptionEvents.Error, on_error)
+            dg_connection.on(LiveTranscriptionEvents.Unhandled, on_unhandled)
             
-            # ✅ OPTIMIZED: Faster settings
+            # ✅ FIXED: Only use VALID parameters - removed no_delay and filler_words
             options = LiveOptions(
                 model="nova-2",
                 language="en-US",
@@ -158,92 +169,88 @@ class DeepgramWebSocketService:
                 punctuate=True,
                 smart_format=True,
                 interim_results=True,
-                # ✅ KEY OPTIMIZATIONS:
-                endpointing=150,        # Was 250ms - 100ms faster!
-                utterance_end_ms=700,   # Was 1000ms - 300ms faster!
+                endpointing=150,        # ✅ SAFE: Was 250ms - 100ms faster
+                utterance_end_ms=700,   # ✅ SAFE: Was 1000ms - 300ms faster
                 vad_events=True,
-                # ✅ Additional speed options:
-                no_delay=True,          # Disable delay for faster response
-                filler_words=False,     # Skip filler word detection
+                # ❌ REMOVED: no_delay=True (invalid parameter - caused HTTP 400!)
+                # ❌ REMOVED: filler_words=False (invalid parameter - caused HTTP 400!)
             )
             
+            # Start connection
             if not await dg_connection.start(options):
-                logger.error("Failed to start Deepgram")
+                logger.error(f"Failed to start Deepgram connection")
                 return False
             
-            # Wait for connection (shorter timeout)
-            for _ in range(30):  # 3 seconds max
+            # Wait for connection with timeout
+            for i in range(50):  # 5 seconds max
                 if session["connected"]:
                     logger.info(f"✅ Deepgram ready: {session_id}")
                     return True
                 await asyncio.sleep(0.1)
             
-            logger.error("Deepgram connection timeout")
+            logger.error(f"Timeout waiting for Deepgram connection")
             return False
             
         except Exception as e:
-            logger.error(f"Deepgram init error: {e}")
+            logger.error(f"Error initializing Deepgram: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return False
     
-    async def _safe_callback(self, callback, session_id: str, transcript: str):
-        """Execute callback with error handling"""
-        try:
-            await callback(session_id, transcript)
-        except Exception as e:
-            logger.error(f"Callback error: {e}")
-    
-    async def _safe_interrupt_callback(self, callback, session_id: str, transcript: str, confidence: float):
-        """Execute interrupt callback with error handling"""
-        try:
-            await callback(session_id, transcript, confidence)
-        except Exception as e:
-            logger.error(f"Interrupt callback error: {e}")
-    
-    async def _reset_cooldown(self, session_id: str, delay: float = 0.3):
+    async def _reset_cooldown(self, session_id: str):
         """Reset interruption cooldown after delay"""
-        await asyncio.sleep(delay)
+        await asyncio.sleep(0.5)
         if session_id in self.sessions:
             self.sessions[session_id]["interruption_cooldown"] = False
             self.sessions[session_id]["last_interim_text"] = ""
     
     async def convert_twilio_audio(self, payload: str, session_id: str) -> bytes:
-        """Convert Twilio mulaw to linear16 PCM"""
+        """
+        Convert Twilio's mulaw audio (8kHz) to linear16 PCM (16kHz) for Deepgram
+        """
         try:
+            # Decode base64 mulaw audio from Twilio
             mulaw_audio = base64.b64decode(payload)
+            
+            # Convert mulaw to linear PCM (16-bit)
             pcm_audio = audioop.ulaw2lin(mulaw_audio, 2)
+            
+            # Resample from 8kHz to 16kHz
             pcm_audio_16k = audioop.ratecv(pcm_audio, 2, 1, 8000, 16000, None)[0]
+            
             return pcm_audio_16k
+            
         except Exception as e:
-            logger.error(f"Audio convert error: {e}")
+            logger.error(f"Error converting audio: {str(e)}")
             return b''
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes) -> bool:
-        """Send audio to Deepgram"""
+        """Send audio chunk to Deepgram for processing"""
         try:
             session = self.sessions.get(session_id)
             if not session or not session["connected"]:
                 return False
             
-            await session["connection"].send(audio_data)
+            connection = session["connection"]
+            await connection.send(audio_data)
             return True
+            
         except Exception as e:
-            logger.error(f"Audio send error: {e}")
+            logger.error(f"Error sending audio: {str(e)}")
             return False
     
     async def close_session(self, session_id: str):
-        """Close Deepgram session"""
+        """Close a Deepgram session"""
         session = self.sessions.pop(session_id, None)
         if session and session.get("connection"):
             try:
                 await session["connection"].finish()
-                logger.info(f"✅ Deepgram closed: {session_id}")
+                logger.info(f"✅ Deepgram session closed: {session_id}")
             except Exception as e:
-                logger.error(f"Close error: {e}")
+                logger.error(f"Error closing session: {str(e)}")
         return True
     
     def is_session_active(self, session_id: str) -> bool:
-        """Check if session is active"""
+        """Check if a session is active"""
         session = self.sessions.get(session_id)
         return session is not None and session.get("connected", False)
