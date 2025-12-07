@@ -1,18 +1,12 @@
-# src/routes/twilio_elevenlabs_routes.py - COMPLETE OPTIMIZED VERSION
+# src/routes/twilio_elevenlabs_routes.py - COMPLETE FIXED VERSION
 #
-# LATENCY OPTIMIZATIONS APPLIED:
-# 1. REMOVED fake playback simulation (biggest win: 1-3 seconds saved)
-# 2. Background DB writes (non-blocking)
-# 3. Parallel operations where possible
-# 4. Shorter echo protection (1.5s vs 2.5s)
-#
-# ALL BUSINESS LOGIC PRESERVED:
-# - RAG routing (3 strategies)
-# - Sentiment analysis
-# - Intent detection
-# - Booking orchestration
-# - Agent routing
-# - Full document retrieval
+# FIXES APPLIED:
+# 1. Interrupted text is now SAVED and PROCESSED (was being lost)
+# 2. is_speaking stays TRUE during Twilio playback  
+# 3. Audio actually STOPS when interrupted (proper task cancellation)
+# 4. Fast-path for simple responses (skips unnecessary LLM calls)
+# 5. Background DB writes (non-blocking)
+# 6. Only fetch datetime/slots when in booking mode
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import Response
@@ -53,11 +47,15 @@ router = APIRouter(prefix="/api/v1/twilio-elevenlabs", tags=["twilio-elevenlabs"
 
 # Active call context
 call_context = {}
+
 # Cache for pre-initialized agent data (with TTL)
 agent_cache = {}
 AGENT_CACHE_TTL = 300  # 5 minutes
 
-# Global numbers (kept from original)
+# FIX #1: Storage for interrupted text (so it's not lost!)
+interrupted_text_storage = {}
+
+# Global numbers
 from_number_global = None
 to_number_global = None
 
@@ -87,14 +85,8 @@ async def _prewarm_agent_cache(company_id: str, agent_id: str):
         logger.error(f"Pre-warm failed: {e}")
 
 
-# ============================================================================
-# OPTIMIZATION HELPER: Non-blocking DB write
-# ============================================================================
 def save_to_db_background(call_sid: str, role: str, content: str):
-    """
-    ✅ OPTIMIZATION: Fire-and-forget DB write
-    Saves ~100-300ms by not blocking the hot path
-    """
+    """Fire-and-forget DB write - saves ~100-300ms"""
     async def _save():
         db = None
         try:
@@ -138,15 +130,13 @@ async def handle_incoming_call_elevenlabs(request: Request):
         logger.info(f"From: {from_number}, To: {to_number}")
         logger.info(f"Company: {company_id}, Agent: {agent_id}")
         
-        # ✅ PRE-WARM: Start fetching agent data immediately
+        # PRE-WARM: Start fetching agent data immediately
         cache_key = f"{company_id}_{agent_id}"
         if not get_cached_agent(cache_key):
             asyncio.create_task(_prewarm_agent_cache(company_id, agent_id))
         
         # Generate TwiML response
         response = VoiceResponse()
-        
-        # Connect to Media Stream - NO pause for faster connection
         connect = Connect()
         ws_domain = settings.base_url.replace('https://', '').replace('http://', '')
 
@@ -158,7 +148,6 @@ async def handle_incoming_call_elevenlabs(request: Request):
         }
         
         stream_url = f"wss://{ws_domain}/api/v1/twilio-elevenlabs/media-stream?call_sid={call_sid}"
-        
         logger.info(f"Stream URL: {stream_url}")
         
         connect.stream(url=stream_url)
@@ -189,7 +178,6 @@ async def handle_call_status(request: Request):
         
         logger.info(f"📞 Call status update: {call_sid} -> {call_status}")
         
-        # ✅ OPTIMIZATION: Background DB update
         async def _update():
             db = None
             try:
@@ -209,7 +197,6 @@ async def handle_call_status(request: Request):
                     db.close()
         
         asyncio.create_task(_update())
-        
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Error handling call status: {e}")
@@ -228,6 +215,7 @@ async def send_clear_to_twilio(websocket: WebSocket, stream_sid: str):
         logger.error(f"Error sending clear: {e}")
 
 
+# FIX #2: Audio streaming with proper speaking state management
 async def stream_elevenlabs_audio_optimized(
     websocket: WebSocket, 
     stream_sid: str, 
@@ -236,10 +224,12 @@ async def stream_elevenlabs_audio_optimized(
     is_speaking_ref: dict = None
 ):
     """
-    ✅ OPTIMIZED: Stream audio WITHOUT fake playback simulation
+    Stream audio with proper speaking state management.
     
-    REMOVED the playback_duration loop that was adding 1-3 seconds of fake delay!
-    Twilio handles audio buffering itself - we just need to stream chunks.
+    FIXES:
+    - Keeps is_speaking=True for estimated playback duration
+    - Actually stops when interrupted
+    - Sends CLEAR on cancellation
     """
     if not stream_sid:
         logger.error("No stream_sid")
@@ -250,14 +240,14 @@ async def stream_elevenlabs_audio_optimized(
     try:
         logger.info(f"🔊 Generating audio: '{text[:50]}...'")
         
-        # ✅ CHECK BEFORE STARTING
+        # CHECK BEFORE STARTING
         if stop_flag_ref.get('stop', False):
             logger.warning("🛑 Stop flag already set - aborting audio")
             return
         
         # Stream audio chunks with interruption checking
         async for audio_chunk in elevenlabs_service.generate(text):
-            # ✅ CHECK STOP FLAG BEFORE EVERY CHUNK
+            # CHECK STOP FLAG BEFORE EVERY CHUNK
             if stop_flag_ref.get('stop', False):
                 logger.warning(f"🛑 STOP FLAG DETECTED at chunk {chunk_count} - halting!")
                 try:
@@ -278,14 +268,28 @@ async def stream_elevenlabs_audio_optimized(
         
         logger.info(f"✓ Sent {chunk_count} chunks to Twilio")
         
-        # ✅✅✅ REMOVED THE FAKE PLAYBACK SIMULATION ✅✅✅
-        # The original code had:
-        #   playback_duration = (chunk_count * 0.025) + 1.0
-        #   while elapsed < playback_duration:
-        #       await asyncio.sleep(0.01)
-        #
-        # This was ADDING 1-3 seconds of unnecessary delay!
-        # Twilio buffers and plays audio itself - we don't need to wait.
+        # FIX: Keep is_speaking=True for estimated playback duration
+        # Each chunk is ~20ms of audio, plus network/buffer delay
+        estimated_playback_seconds = (chunk_count * 0.02) + 0.5
+        logger.info(f"⏳ Waiting {estimated_playback_seconds:.1f}s for Twilio playback")
+        
+        # Wait for Twilio to finish playing, but check for interruptions
+        elapsed = 0
+        check_interval = 0.05  # 50ms checks
+        
+        while elapsed < estimated_playback_seconds:
+            if stop_flag_ref.get('stop', False):
+                logger.warning(f"🛑 STOP during playback wait at {elapsed:.2f}s")
+                try:
+                    await websocket.send_json({"event": "clear", "streamSid": stream_sid})
+                except:
+                    pass
+                return
+            
+            await asyncio.sleep(check_interval)
+            elapsed += check_interval
+        
+        logger.info("✅ Audio playback completed")
         
     except asyncio.CancelledError:
         logger.warning(f"🛑 Audio task CANCELLED at chunk {chunk_count}")
@@ -305,7 +309,7 @@ async def stream_elevenlabs_audio_optimized(
 
 @router.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
-    """Incoming call handler with proper echo prevention and interruption handling"""
+    """Incoming call handler with proper interruption handling"""
     global from_number_global, to_number_global
     
     try:
@@ -325,7 +329,6 @@ async def handle_media_stream(websocket: WebSocket):
     greeting_sent = False
     greeting_start_time = None
     
-    # ✅ Use reference dicts for state that persists across callbacks
     is_agent_speaking_ref = {'speaking': False}
     current_audio_task_ref = {'task': None}
     
@@ -371,7 +374,7 @@ async def handle_media_stream(websocket: WebSocket):
     
     logger.info(f"Company ID: {company_id}, Master Agent: {master_agent_id}")
     
-    # ✅ CHECK CACHE FIRST for faster startup
+    # CHECK CACHE FIRST for faster startup
     cache_key = f"{company_id}_{master_agent_id}"
     cached = get_cached_agent(cache_key)
     
@@ -380,7 +383,6 @@ async def handle_media_stream(websocket: WebSocket):
         master_agent = cached['agent']
     else:
         master_agent = await agent_config_service.get_master_agent(company_id, master_agent_id)
-        # Cache it
         company_name = company_service.get_company_name_by_id(company_id)
         agent_cache[cache_key] = {
             'agent': master_agent,
@@ -415,7 +417,7 @@ async def handle_media_stream(websocket: WebSocket):
     
     logger.info(f"Specialized agents: {[a['name'] for a in specialized_agents]}")
     
-    # ✅ PRE-GENERATE GREETING before Deepgram init
+    # PRE-GENERATE GREETING before Deepgram init
     greeting = prompt_template_service.generate_greeting(master_agent, company_id, agent_name)
     logger.info(f"💬 Greeting pre-generated: '{greeting[:50]}...'")
     
@@ -431,9 +433,9 @@ async def handle_media_stream(websocket: WebSocket):
     }
     
     try:
-        # ✅ INSTANT INTERRUPTION CALLBACK (unchanged from original)
+        # FIX #3: INTERRUPTION CALLBACK - Now saves interrupted text!
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
-            """🚨 INSTANT interruption - ALWAYS clear Twilio buffer"""
+            """INSTANT interruption - saves text and clears Twilio buffer"""
             nonlocal stream_sid
             nonlocal current_audio_task
             
@@ -444,7 +446,7 @@ async def handle_media_stream(websocket: WebSocket):
             is_speaking = is_agent_speaking_ref['speaking']
             logger.info(f"🎯 INTERRUPT CHECK: '{transcript[:30]}' | is_speaking={is_speaking}")
             
-            # ✅ ALWAYS send CLEAR to Twilio
+            # ALWAYS send CLEAR to Twilio
             if stream_sid:
                 try:
                     await websocket.send_json({"event": "clear", "streamSid": stream_sid})
@@ -452,7 +454,16 @@ async def handle_media_stream(websocket: WebSocket):
                 except Exception as e:
                     logger.error(f"Failed to send CLEAR: {e}")
             
+            # FIX: ALWAYS save the interrupted text (so it's not lost!)
+            interrupted_text_storage[call_sid] = {
+                'text': transcript,
+                'timestamp': datetime.utcnow(),
+                'confidence': confidence
+            }
+            logger.info(f"💾 Saved interrupted text: '{transcript}'")
+            
             if not is_speaking:
+                logger.debug(f"Agent wasn't speaking, but saved text anyway")
                 return
             
             logger.warning(f"🚨 INTERRUPTING AGENT! '{transcript}'")
@@ -460,12 +471,22 @@ async def handle_media_stream(websocket: WebSocket):
             stop_audio_flag['stop'] = True
             is_agent_speaking_ref['speaking'] = False
             
+            # FIX: Cancel audio task AND WAIT for completion
             if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
                 logger.info(f"⚡ Cancelling audio task...")
                 current_audio_task_ref['task'].cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(current_audio_task_ref['task']), 
+                        timeout=0.3
+                    )
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                current_audio_task_ref['task'] = None
             
             logger.info("✅ Interruption complete - ready for user")
         
+        # FIX #4: TRANSCRIPT CALLBACK - Uses saved interrupted text!
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
             nonlocal current_agent_context
@@ -477,23 +498,38 @@ async def handle_media_stream(websocket: WebSocket):
             if not transcript.strip():
                 return
             
-            # ✅ OPTIMIZATION: Shorter echo protection (1.5s vs 2.5s)
+            # Echo protection
             if greeting_start_time:
                 elapsed = (datetime.utcnow() - greeting_start_time).total_seconds()
-                if elapsed < 1.5:  # Was 2.5s
-                    logger.debug(f"Ignoring early transcript (echo): '{transcript}' at {elapsed:.1f}s")
+                if elapsed < 1.5:
+                    logger.debug(f"Ignoring early transcript (echo): '{transcript}'")
                     return
+            
+            # FIX: Check for pending interrupted text and USE it
+            if call_sid in interrupted_text_storage:
+                interrupted = interrupted_text_storage.pop(call_sid)
+                interrupted_text = interrupted['text']
+                age = (datetime.utcnow() - interrupted['timestamp']).total_seconds()
+                
+                if age < 10.0:  # Only use if recent
+                    if interrupted_text.lower() not in transcript.lower():
+                        # Different text - combine them
+                        transcript = f"{interrupted_text} {transcript}"
+                        logger.info(f"📝 Combined with interrupted text: '{transcript}'")
+                    elif len(transcript.split()) < 3 and len(interrupted_text.split()) >= 3:
+                        # Final is noise, use interrupted text
+                        transcript = interrupted_text
+                        logger.info(f"📝 Using interrupted text instead: '{transcript}'")
             
             logger.info(f"👤 CUSTOMER SAID: '{transcript}'")
             
-            # Save to transcript
             conversation_transcript.append({
                 'role': 'user',
                 'content': transcript,
                 'timestamp': datetime.utcnow().isoformat()
             })
             
-            # ✅ PRESERVED: Sentiment analysis
+            # Sentiment analysis
             sentiment_analysis = prompt_template_service.detect_sentiment_and_urgency(
                 transcript,
                 current_agent_context
@@ -501,10 +537,10 @@ async def handle_media_stream(websocket: WebSocket):
             
             logger.info(f"Sentiment: {sentiment_analysis['sentiment']}, Urgency: {sentiment_analysis['urgency']}")
             
-            # ✅ OPTIMIZATION: Background DB save
+            # Background DB save
             save_to_db_background(call_sid, "user", transcript)
             
-            # ✅ PRESERVED: Agent routing
+            # Agent routing
             current_agent_id = master_agent_id
             
             if specialized_agents:
@@ -581,7 +617,7 @@ async def handle_media_stream(websocket: WebSocket):
                 is_agent_speaking_ref['speaking'] = False
                 current_audio_task_ref['task'] = None
         
-        # ✅ PARALLEL INIT: Start Deepgram initialization as background task
+        # Start Deepgram initialization as background task
         session_id = f"deepgram_{call_sid}"
         logger.info(f"🎙️ Starting Deepgram initialization (background)...")
         
@@ -598,7 +634,7 @@ async def handle_media_stream(websocket: WebSocket):
             stream_sid = first_message_data.get("streamSid")
             logger.info(f"✅ Stream started: {stream_sid}")
             
-            # ✅ SEND GREETING IMMEDIATELY - Don't wait for Deepgram!
+            # SEND GREETING IMMEDIATELY - Don't wait for Deepgram!
             logger.info(f"🔊 Sending greeting NOW (Deepgram init in background)")
             
             is_agent_speaking_ref['speaking'] = True
@@ -624,7 +660,7 @@ async def handle_media_stream(websocket: WebSocket):
             
             greeting_sent = True
         
-        # ✅ NOW wait for Deepgram to be ready (should be done by now)
+        # NOW wait for Deepgram to be ready (should be done by now)
         deepgram_connected = await deepgram_init_task
         if not deepgram_connected:
             logger.error("Deepgram connection failed")
@@ -697,6 +733,9 @@ async def handle_media_stream(websocket: WebSocket):
     
     finally:
         logger.info(f"🧹 Cleaning up {call_sid}")
+        
+        # Clean up interrupted text storage
+        interrupted_text_storage.pop(call_sid, None)
         
         try:
             call_duration = 0
@@ -775,10 +814,7 @@ async def process_and_respond_incoming(
     is_speaking_ref: dict = None,
     audio_task_ref: dict = None
 ):
-    """
-    Process incoming call with AI-powered intelligent routing
-    ✅ ALL BUSINESS LOGIC PRESERVED - only removed fake playback wait
-    """
+    """Process incoming call with AI-powered intelligent routing"""
     
     rag = get_rag_service()
     
@@ -788,7 +824,7 @@ async def process_and_respond_incoming(
             logger.info("Skipping response - interrupted")
             return
         
-        # ✅ PRESERVED: AI-POWERED DECISION for routing
+        # AI-POWERED DECISION for routing
         routing_decision = await rag_routing_service.should_retrieve_documents(
             user_message=transcript,
             conversation_history=conversation_transcript,
@@ -811,7 +847,7 @@ async def process_and_respond_incoming(
         
         llm_response = None
         
-        # ✅ PRESERVED: Strategy 1 - Direct canned response
+        # Strategy 1 - Direct canned response
         if response_strategy == 'direct_canned':
             simple_prompt = [
                 {"role": "system", "content": f"You are a helpful assistant. Respond naturally to this greeting/farewell in 1 sentence."},
@@ -825,7 +861,7 @@ async def process_and_respond_incoming(
             
             llm_response = "".join(response_chunks)
         
-        # ✅ PRESERVED: Strategy 2 - Use conversation context only
+        # Strategy 2 - Use conversation context only
         elif response_strategy == 'conversation_context':
             support_context = f"""[INCOMING SUPPORT CALL - ACTIVE CONVERSATION]
 Customer's Sentiment: {sentiment_analysis.get('sentiment', 'neutral')}
@@ -864,7 +900,7 @@ You are continuing an active conversation. Use the conversation history to respo
             else:
                 llm_response = response.content
         
-        # ✅ PRESERVED: Strategy 3 - Full RAG with document retrieval
+        # Strategy 3 - Full RAG with document retrieval
         elif response_strategy == 'document_retrieval':
             support_context = f"""[INCOMING SUPPORT CALL]
 Customer's Sentiment: {sentiment_analysis.get('sentiment', 'neutral')}
@@ -915,7 +951,7 @@ You are on a LIVE SUPPORT PHONE CALL. Use the provided documentation to give acc
             'strategy': response_strategy
         })
         
-        # ✅ OPTIMIZATION: Background DB save
+        # Background DB save
         save_to_db_background(call_sid, "assistant", llm_response)
         
         # Stream response with speaking flag management
@@ -972,10 +1008,7 @@ async def process_and_respond_outbound(
     is_agent_speaking_ref: dict,
     current_audio_task_ref: dict
 ):
-    """
-    Outbound call processing with proper state management
-    ✅ ALL BUSINESS LOGIC PRESERVED - only removed fake playback wait
-    """
+    """Outbound call processing with proper state management"""
     
     rag = get_rag_service()
     
@@ -991,11 +1024,11 @@ async def process_and_respond_outbound(
         customer_name = call_metadata.get('customer_name', 'Customer')
         customer_phone = call_metadata.get('to_number')
         
-        # ✅ PRESERVED: Check booking session
+        # Check booking session
         booking_session = booking_orchestrator.get_session(call_sid)
         is_booking_mode = booking_session and booking_orchestrator.is_booking_active(call_sid)
         
-        # ✅ PRESERVED: Intent analysis
+        # Intent analysis
         buying_readiness = intent_analysis.get('buying_readiness', 0)
         intent_type = intent_analysis.get('intent_type')
         
@@ -1005,7 +1038,7 @@ async def process_and_respond_outbound(
             any(word in transcript.lower() for word in ['book', 'schedule', 'appointment', 'yes', 'sure'])
         )
         
-        # ✅ PRESERVED: Initialize booking
+        # Initialize booking
         if should_start_booking and not booking_session:
             booking_session = booking_orchestrator.initialize_booking(
                 call_sid=call_sid,
@@ -1021,47 +1054,51 @@ async def process_and_respond_outbound(
         
         now = datetime.now()
         
-        # ✅ PRESERVED: PARALLEL API CALLS FOR SPEED
-        async def fetch_datetime_info():
-            return await datetime_parser_service.parse_user_datetime(
-                user_input=transcript,
-                user_timezone=call_metadata.get('user_timezone', 'UTC'),
-                business_hours={'start': '09:00', 'end': '18:00'}
-            )
+        # FIX #5: Only fetch datetime/slots when in booking mode
+        datetime_info = {}
+        available_slots_text = ""
         
-        async def fetch_slots():
-            if not (is_booking_mode and campaign_id):
-                return ""
-            try:
-                slot_manager = SlotManagerService()
-                slots_data = await slot_manager.get_available_slots(
-                    campaign_id=campaign_id,
-                    start_date=now,
-                    end_date=now + timedelta(days=7),
-                    count=5
+        if is_booking_mode and campaign_id:
+            async def fetch_datetime_info():
+                return await datetime_parser_service.parse_user_datetime(
+                    user_input=transcript,
+                    user_timezone=call_metadata.get('user_timezone', 'UTC'),
+                    business_hours={'start': '09:00', 'end': '18:00'}
                 )
-                return slot_manager.format_slots_for_prompt(slots_data)
-            except Exception as e:
-                logger.error(f"Slot fetch error: {e}")
-                tomorrow = now + timedelta(days=1)
-                return f"Suggest: tomorrow ({tomorrow.strftime('%A, %B %d')}) at 10 AM, 2 PM, or 4 PM"
+            
+            async def fetch_slots():
+                try:
+                    slot_manager = SlotManagerService()
+                    slots_data = await slot_manager.get_available_slots(
+                        campaign_id=campaign_id,
+                        start_date=now,
+                        end_date=now + timedelta(days=7),
+                        count=5
+                    )
+                    return slot_manager.format_slots_for_prompt(slots_data)
+                except Exception as e:
+                    logger.error(f"Slot fetch error: {e}")
+                    tomorrow = now + timedelta(days=1)
+                    return f"Suggest: tomorrow ({tomorrow.strftime('%A, %B %d')}) at 10 AM, 2 PM, or 4 PM"
+            
+            # Run in parallel
+            datetime_info, available_slots_text = await asyncio.gather(
+                fetch_datetime_info(),
+                fetch_slots(),
+                return_exceptions=True
+            )
+            
+            # Handle exceptions
+            if isinstance(datetime_info, Exception):
+                logger.error(f"Datetime parsing failed: {datetime_info}")
+                datetime_info = {}
+            if isinstance(available_slots_text, Exception):
+                logger.error(f"Slot fetching failed: {available_slots_text}")
+                available_slots_text = ""
+        else:
+            logger.info("⚡ Skipped datetime/slot parsing (not in booking mode)")
         
-        # Run in parallel
-        datetime_info, available_slots_text = await asyncio.gather(
-            fetch_datetime_info(),
-            fetch_slots(),
-            return_exceptions=True
-        )
-        
-        # Handle exceptions
-        if isinstance(datetime_info, Exception):
-            logger.error(f"Datetime parsing failed: {datetime_info}")
-            datetime_info = {}
-        if isinstance(available_slots_text, Exception):
-            logger.error(f"Slot fetching failed: {available_slots_text}")
-            available_slots_text = ""
-        
-        # ✅ PRESERVED: Update booking session if datetime found
+        # Update booking session if datetime found
         if isinstance(datetime_info, dict) and datetime_info.get('parsed_successfully') and booking_session:
             logger.info(f"✓ AI extracted: {datetime_info.get('user_friendly')}")
             
@@ -1072,7 +1109,7 @@ async def process_and_respond_outbound(
             if datetime_info.get('datetime_iso'):
                 booking_orchestrator.update_session_data(call_sid, 'datetime_iso', datetime_info['datetime_iso'])
         
-        # ✅ PRESERVED: Extract email if present
+        # Extract email if present
         import re
         email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
         email_match = re.search(email_pattern, transcript)
@@ -1093,7 +1130,7 @@ async def process_and_respond_outbound(
         # Get context
         company_name = company_service.get_company_name_by_id(company_id)
         
-        # ✅ PRESERVED: Build prompt based on mode
+        # Build prompt based on mode
         if is_sales_call:
             next_action = booking_orchestrator.get_next_action(call_sid) if booking_session else {'prompt_hint': 'Ask for date/time'}
             collected = booking_session['collected_data'] if booking_session else {}
@@ -1161,7 +1198,7 @@ Be conversational."""
         
         response = await rag.llm_with_functions.ainvoke(conversation_messages)
         
-        # ✅ PRESERVED: Handle function calls
+        # Handle function calls
         if hasattr(response, 'additional_kwargs') and 'function_call' in response.additional_kwargs:
             function_call = response.additional_kwargs['function_call']
             function_name = function_call['name']
@@ -1190,7 +1227,7 @@ Be conversational."""
                 
                 logger.info(f"✓ Result: {llm_response[:80]}...")
                 
-                # ✅ PRESERVED: Update state after execution
+                # Update state after execution
                 if function_name == 'check_slot_availability':
                     if 'available' in llm_response.lower() and 'not available' not in llm_response.lower():
                         booking_orchestrator.update_session_data(call_sid, 'slot_available', True)
@@ -1228,7 +1265,7 @@ Be conversational."""
         
         logger.info(f"🤖 AGENT: {llm_response[:100]}...")
         
-        # ✅ OPTIMIZATION: Background DB save
+        # Background DB save
         save_to_db_background(call_sid, "assistant", llm_response)
         
         # Stream audio with state management
@@ -1282,7 +1319,7 @@ Be conversational."""
 
 @router.post("/outbound-connect")
 async def handle_outbound_connect(request: Request):
-    """Outbound call handler - OPTIMIZED"""
+    """Outbound call handler"""
     global from_number_global, to_number_global
     
     try:
@@ -1304,7 +1341,7 @@ async def handle_outbound_connect(request: Request):
         logger.info(f"From: {from_number}, To: {to_number}")
         logger.info(f"Company: {company_id}, Agent: {agent_id}, Customer: {customer_name}")
         
-        # Generate TwiML - NO delays
+        # Generate TwiML
         response = VoiceResponse()
         
         connect = Connect()
@@ -1340,7 +1377,7 @@ async def handle_outbound_connect(request: Request):
 
 @router.websocket("/outbound-stream")
 async def handle_outbound_stream(websocket: WebSocket):
-    """Outbound call streaming - ALL LOGIC PRESERVED, OPTIMIZED"""
+    """Outbound call streaming with ALL fixes applied"""
     global from_number_global, to_number_global
     
     try:
@@ -1393,7 +1430,7 @@ async def handle_outbound_stream(websocket: WebSocket):
     campaign_id = context.get("campaign_id", "")
     call_type = context.get("call_type", "outgoing")
     
-    # ✅ CHECK CACHE FIRST (should be pre-warmed)
+    # CHECK CACHE FIRST (should be pre-warmed)
     cache_key = f"{company_id}_{master_agent_id}"
     cached = get_cached_agent(cache_key)
     
@@ -1434,7 +1471,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         'call_type': call_type
     }
     
-    # ✅ PRE-GENERATE GREETING
+    # PRE-GENERATE GREETING
     additional_context = master_agent.get('additional_context', {})
     business_context = additional_context.get('businessContext', 'our services')
     
@@ -1465,9 +1502,9 @@ async def handle_outbound_stream(websocket: WebSocket):
     }
     
     try:
-        # ✅ INTERRUPTION CALLBACK (unchanged)
+        # FIXED INTERRUPTION CALLBACK - Saves interrupted text!
         async def on_interim_transcript(session_id: str, transcript: str, confidence: float):
-            """🚨 INSTANT interruption - ALWAYS clear Twilio buffer"""
+            """INSTANT interruption - saves text and clears Twilio buffer"""
             nonlocal stream_sid
             nonlocal current_audio_task
             
@@ -1478,13 +1515,21 @@ async def handle_outbound_stream(websocket: WebSocket):
             is_speaking = is_agent_speaking_ref['speaking']
             logger.info(f"🎯 INTERRUPT CHECK: '{transcript[:30]}' | is_speaking={is_speaking}")
             
-            # ✅ ALWAYS send CLEAR to Twilio
+            # ALWAYS send CLEAR to Twilio
             if stream_sid:
                 try:
                     await websocket.send_json({"event": "clear", "streamSid": stream_sid})
                     logger.info(f"✅ CLEAR sent to Twilio for {stream_sid}")
                 except Exception as e:
                     logger.error(f"Failed to send CLEAR: {e}")
+            
+            # FIX: ALWAYS save the interrupted text!
+            interrupted_text_storage[call_sid] = {
+                'text': transcript,
+                'timestamp': datetime.utcnow(),
+                'confidence': confidence
+            }
+            logger.info(f"💾 Saved interrupted text: '{transcript}'")
             
             if not is_speaking:
                 return
@@ -1494,15 +1539,25 @@ async def handle_outbound_stream(websocket: WebSocket):
             stop_audio_flag['stop'] = True
             is_agent_speaking_ref['speaking'] = False
             
+            # FIX: Cancel AND WAIT for task
             if current_audio_task_ref['task'] and not current_audio_task_ref['task'].done():
                 logger.info(f"⚡ Cancelling audio task...")
                 current_audio_task_ref['task'].cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(current_audio_task_ref['task']), 
+                        timeout=0.3
+                    )
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                current_audio_task_ref['task'] = None
             
             if current_audio_task and not current_audio_task.done():
                 current_audio_task.cancel()
             
             logger.info("✅ Interruption complete - ready for user")
         
+        # FIXED TRANSCRIPT CALLBACK - Uses saved interrupted text!
         async def on_deepgram_transcript(session_id: str, transcript: str):
             nonlocal conversation_transcript
             nonlocal current_agent_context
@@ -1515,20 +1570,53 @@ async def handle_outbound_stream(websocket: WebSocket):
             if not transcript.strip():
                 return
             
-            # ✅ OPTIMIZATION: Shorter echo protection (1.5s vs 2.5s)
+            # Echo protection
             if greeting_start_time:
                 elapsed = (datetime.utcnow() - greeting_start_time).total_seconds()
                 if elapsed < 1.5:
                     return
             
+            # FIX: Check for pending interrupted text and USE it
+            if call_sid in interrupted_text_storage:
+                interrupted = interrupted_text_storage.pop(call_sid)
+                interrupted_text = interrupted['text']
+                age = (datetime.utcnow() - interrupted['timestamp']).total_seconds()
+                
+                if age < 10.0:
+                    if interrupted_text.lower() not in transcript.lower():
+                        transcript = f"{interrupted_text} {transcript}"
+                        logger.info(f"📝 Combined with interrupted text: '{transcript}'")
+                    elif len(transcript.split()) < 3 and len(interrupted_text.split()) >= 3:
+                        transcript = interrupted_text
+                        logger.info(f"📝 Using interrupted text instead: '{transcript}'")
+            
             logger.info(f"👤 CUSTOMER: '{transcript}'")
             
-            # ✅ PRESERVED: Detect intent using AI
-            intent_analysis = await intent_detection_service.detect_customer_intent(
-                customer_message=transcript,
-                conversation_history=conversation_transcript,
-                call_type=call_type
-            )
+            # FIX #6: Fast-path for simple responses (skip expensive AI calls)
+            simple_words = ['yes', 'no', 'hello', 'hi', 'okay', 'sure', 'yeah', 'nope', 'yep', 'hey']
+            is_simple = len(transcript.split()) <= 5 and any(w in transcript.lower() for w in simple_words)
+            
+            if is_simple and call_type == "outgoing":
+                positive_words = ['yes', 'yeah', 'sure', 'okay', 'yep']
+                is_positive = any(w in transcript.lower() for w in positive_words)
+                
+                intent_analysis = {
+                    'intent_type': 'soft_interest' if is_positive else 'neutral',
+                    'sentiment': 'positive' if is_positive else 'neutral',
+                    'buying_readiness': 60 if is_positive else 40,
+                    'should_book': False,
+                    'should_persuade': True,
+                    'should_end_call': False,
+                    'objection_type': 'none',
+                    'reasoning': 'Fast path - simple response'
+                }
+                logger.info(f"⚡ Fast intent detection: {intent_analysis['intent_type']}")
+            else:
+                intent_analysis = await intent_detection_service.detect_customer_intent(
+                    customer_message=transcript,
+                    conversation_history=conversation_transcript,
+                    call_type=call_type
+                )
             
             conversation_transcript.append({
                 'role': 'user',
@@ -1539,12 +1627,12 @@ async def handle_outbound_stream(websocket: WebSocket):
                 'buying_readiness': intent_analysis.get('buying_readiness')
             })
             
-            # ✅ OPTIMIZATION: Background DB save
+            # Background DB save
             save_to_db_background(call_sid, "user", transcript)
             
             intent_type = intent_analysis.get('intent_type')
             
-            # ✅ PRESERVED: Handle rejections
+            # Handle rejections
             if intent_type == 'rejection':
                 rejection_count += 1
                 if rejection_count >= 2:
@@ -1583,10 +1671,10 @@ async def handle_outbound_stream(websocket: WebSocket):
                 if intent_type in ['soft_interest', 'strong_buying', 'question']:
                     rejection_count = 0
             
-            # ✅ PRESERVED: Agent routing
+            # Agent routing (skip for simple responses)
             current_agent_id = master_agent_id
             
-            if specialized_agents:
+            if specialized_agents and not is_simple:
                 detected_agent = await intent_router_service.detect_intent(
                     transcript,
                     company_id,
@@ -1597,6 +1685,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                 if detected_agent:
                     intent_router_service.set_current_agent(call_sid, detected_agent)
                     current_agent_id = detected_agent
+            elif is_simple:
+                logger.info("⚡ Skipped agent routing (simple response)")
             
             call_state["interaction_count"] += 1
             
@@ -1625,7 +1715,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Response error: {e}")
         
-        # ✅ PARALLEL: Start Deepgram in background
+        # Start Deepgram in background
         session_id = f"deepgram_{call_sid}"
         logger.info(f"🎙️ Starting Deepgram (background)...")
         
@@ -1642,7 +1732,7 @@ async def handle_outbound_stream(websocket: WebSocket):
             stream_sid = first_message_data.get("streamSid")
             logger.info(f"✅ Stream started: {stream_sid}")
             
-            # ✅ SEND GREETING IMMEDIATELY
+            # SEND GREETING IMMEDIATELY
             logger.info("🔊 Sending greeting NOW")
             
             is_agent_speaking_ref['speaking'] = True
@@ -1736,6 +1826,9 @@ async def handle_outbound_stream(websocket: WebSocket):
     finally:
         logger.info(f"🧹 Cleanup {call_sid}")
         
+        # Clean up interrupted text storage
+        interrupted_text_storage.pop(call_sid, None)
+        
         try:
             call_duration = int((datetime.utcnow() - call_metadata['start_time']).total_seconds())
             
@@ -1794,7 +1887,7 @@ async def initiate_outbound_call(request: Request):
         
         logger.info(f"📞 Initiating call to {to_number}")
         
-        # ✅ PRE-WARM: Fetch and cache agent data BEFORE call connects
+        # PRE-WARM: Fetch and cache agent data BEFORE call connects
         cache_key = f"{company_id}_{agent_id}"
         if not get_cached_agent(cache_key):
             logger.info(f"⚡ PRE-WARMING agent cache for {cache_key}...")
@@ -1837,7 +1930,7 @@ async def initiate_outbound_call(request: Request):
         
         logger.info(f"✅ Call initiated: {call.sid}")
         
-        # ✅ OPTIMIZATION: Background DB save
+        # Background DB save
         async def _save():
             db = None
             try:

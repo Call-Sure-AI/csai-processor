@@ -1,11 +1,4 @@
-# src/services/voice/elevenlabs_service.py - COMPLETE OPTIMIZED VERSION
-#
-# OPTIMIZATIONS APPLIED:
-# 1. Added optimize_streaming_latency=4 parameter for fastest response
-# 2. Added connection pooling via _get_session()
-# 3. Slightly tuned voice settings for speed (lower stability = faster)
-#
-# ALL ORIGINAL METHODS PRESERVED - Nothing removed!
+# src/services/voice/elevenlabs_service.py - COMPLETE VERSION
 
 """
 ElevenLabs Voice Service for Twilio Integration
@@ -48,7 +41,6 @@ class ElevenLabsVoiceService:
         self.has_sent_initial_message = False
         self.buffer = ""
         
-        # ✅ OPTIMIZATION: Slightly lower stability for faster generation
         self.voice_settings = {
             "stability": 0.5,
             "similarity_boost": 0.75,
@@ -61,11 +53,7 @@ class ElevenLabsVoiceService:
             logger.warning("ElevenLabs API key is not set. Voice services will not work.")
 
     async def generate(self, text: str) -> AsyncGenerator[str, None]:
-        """
-        Stream audio chunks in real-time
-        
-        ✅ OPTIMIZED: Added optimize_streaming_latency parameter
-        """
+        """Stream audio chunks in real-time"""
         if not text or not text.strip():
             return
         
@@ -86,9 +74,6 @@ class ElevenLabsVoiceService:
                     style=0.2,
                     use_speaker_boost=True
                 ),
-                # ✅ OPTIMIZATION: Request fastest streaming latency (0-4, 4 is fastest)
-                # Note: This parameter may not be available in all SDK versions
-                # If you get an error, remove this line
             )
             
             chunk_count = 0
@@ -122,7 +107,6 @@ class ElevenLabsVoiceService:
             return False
             
         try:
-            # ✅ OPTIMIZATION: Connection pooling
             if self.session is None or self.session.closed:
                 connector = aiohttp.TCPConnector(
                     limit=10,

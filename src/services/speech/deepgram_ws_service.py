@@ -1,7 +1,4 @@
 # src/services/speech/deepgram_ws_service.py - ORIGINAL (NO CHANGES)
-#
-# This is your EXACT original file - I'm not changing ANY Deepgram parameters
-# The only optimization should be in the routes file (removing playback simulation)
 
 import asyncio
 import json
