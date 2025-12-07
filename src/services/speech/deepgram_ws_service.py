@@ -1,9 +1,7 @@
-# src/services/speech/deepgram_ws_service.py - FIXED VERSION
+# src/services/speech/deepgram_ws_service.py - ORIGINAL (NO CHANGES)
 #
-# FIX: Removed invalid parameters (no_delay, filler_words) that caused HTTP 400
-# SAFE OPTIMIZATIONS ONLY:
-# - endpointing: 150ms (was 250ms)
-# - utterance_end_ms: 700ms (was 1000ms)
+# This is your EXACT original file - I'm not changing ANY Deepgram parameters
+# The only optimization should be in the routes file (removing playback simulation)
 
 import asyncio
 import json
@@ -71,13 +69,14 @@ class DeepgramWebSocketService:
             }
             self.sessions[session_id] = session
             
-            # Event handlers with flexible signatures
+            # Event handlers with flexible signatures to handle SDK variations
             async def on_open(*args, **kwargs):
                 logger.info(f"✅ Deepgram connected: {session_id}")
                 session["connected"] = True
             
             async def on_message(*args, **kwargs):
                 try:
+                    # Handle both positional and keyword arguments
                     result = args[1] if len(args) > 1 else kwargs.get('result')
                     if result is None:
                         return
@@ -87,6 +86,7 @@ class DeepgramWebSocketService:
                     if len(sentence) == 0:
                         return
                     
+                    # Get confidence score
                     confidence = getattr(result.channel.alternatives[0], 'confidence', 0.0)
                     
                     if result.is_final:
@@ -94,6 +94,7 @@ class DeepgramWebSocketService:
                         logger.info(f"📝 Final: '{sentence}'")
                         session["last_interim_text"] = ""
                         session["interruption_cooldown"] = False
+                        # Call directly - route handler handles non-blocking
                         try:
                             await callback(session_id, sentence)
                         except Exception as e:
@@ -102,22 +103,27 @@ class DeepgramWebSocketService:
                         # INTERIM transcript - for interruption detection
                         word_count = len(sentence.split())
                         
+                        # Only trigger if different from last interim (avoid duplicates)
                         if sentence != session["last_interim_text"] and not session["interruption_cooldown"]:
                             session["last_interim_text"] = sentence
                             
+                            # Trigger interruption callback
                             if interruption_callback and word_count >= 2:
                                 confidence_threshold = 0.3
                                 
                                 if confidence == 0.0 or confidence >= confidence_threshold:
                                     logger.info(f"🎯 TRIGGERING INTERRUPTION: '{sentence}' ({word_count} words, conf: {confidence:.2f})")
                                     
+                                    # Set cooldown to prevent rapid-fire
                                     session["interruption_cooldown"] = True
                                     
+                                    # Fire interruption - must be fast!
                                     try:
                                         await interruption_callback(session_id, sentence, confidence)
                                     except Exception as e:
                                         logger.error(f"Interruption callback error: {e}")
                                     
+                                    # Reset cooldown after short delay
                                     asyncio.create_task(self._reset_cooldown(session_id))
                         
                 except Exception as e:
@@ -133,6 +139,7 @@ class DeepgramWebSocketService:
             
             async def on_utterance_end(*args, **kwargs):
                 logger.debug(f"Utterance ended")
+                # Reset cooldown on utterance end
                 if session_id in self.sessions:
                     self.sessions[session_id]["interruption_cooldown"] = False
             
@@ -159,7 +166,7 @@ class DeepgramWebSocketService:
             dg_connection.on(LiveTranscriptionEvents.Error, on_error)
             dg_connection.on(LiveTranscriptionEvents.Unhandled, on_unhandled)
             
-            # ✅ FIXED: Only use VALID parameters - removed no_delay and filler_words
+            # YOUR EXACT ORIGINAL OPTIONS - NO CHANGES
             options = LiveOptions(
                 model="nova-2",
                 language="en-US",
@@ -169,11 +176,9 @@ class DeepgramWebSocketService:
                 punctuate=True,
                 smart_format=True,
                 interim_results=True,
-                endpointing=150,        # ✅ SAFE: Was 250ms - 100ms faster
-                utterance_end_ms=700,   # ✅ SAFE: Was 1000ms - 300ms faster
+                endpointing=250,       # YOUR ORIGINAL VALUE
+                utterance_end_ms=1000, # YOUR ORIGINAL VALUE
                 vad_events=True,
-                # ❌ REMOVED: no_delay=True (invalid parameter - caused HTTP 400!)
-                # ❌ REMOVED: filler_words=False (invalid parameter - caused HTTP 400!)
             )
             
             # Start connection
