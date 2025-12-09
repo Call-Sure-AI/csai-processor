@@ -1165,6 +1165,8 @@ async def process_and_respond_outbound(
    - Then immediately guide back to booking
 5. Keep ALL responses to 1-2 sentences maximum
 6. NO support tickets in sales mode
+7. If user talks in english, reply back in english, else reply in user's language, except for tool calls etc.
+8. If user speaks in hindi, make sure to reply in hinglish only, except for tool calls etc.
 
 Be conversational but focused on booking."""
 
