@@ -12,3 +12,4 @@ python -m app.main
 uvicorn app.main:app --reload
 
 dir /s /b /a:-d | findstr /i /v "\\.venv\\" | findstr /i /v "\\__pycache__\\" | findstr /i /v "\\.git\\" | findstr /i /v "\\.github\\"
+
