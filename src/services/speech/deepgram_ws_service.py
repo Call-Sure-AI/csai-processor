@@ -166,7 +166,7 @@ class DeepgramWebSocketService:
             # YOUR EXACT ORIGINAL OPTIONS - NO CHANGES
             options = LiveOptions(
                 model="nova-2",
-                language="en-US",
+                language="multi",
                 encoding="linear16",
                 sample_rate=16000,
                 channels=1,
