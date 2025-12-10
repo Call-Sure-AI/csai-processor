@@ -25,7 +25,7 @@ class ElevenLabsVoiceService:
     def __init__(self):
         self.client = ElevenLabs(api_key=settings.eleven_labs_api_key)
         self.api_key = settings.eleven_labs_api_key
-        self.voice_id = settings.voice_id or "IKne3meq5aSn9XLyUdCD"  # Default voice
+        self.voice_id = settings.voice_id
         self.base_url = "https://api.elevenlabs.io/v1"
         self.ws_url = "wss://api.elevenlabs.io/v1/text-to-speech"
         self.session: Optional[aiohttp.ClientSession] = None
