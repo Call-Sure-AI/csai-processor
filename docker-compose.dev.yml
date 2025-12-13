@@ -18,39 +18,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    networks:
-      - csai-python-network-dev
-    depends_on:
-      - redis
-      - postgres
-
-  redis:
-    image: redis:7-alpine
-    container_name: csai-redis-dev
-    ports:
-      - "6380:6379"
-    networks:
-      - csai-python-network-dev
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: csai-postgres-dev
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-csai_dev}
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres_data_dev:/var/lib/postgresql/data
-    networks:
-      - csai-python-network-dev
-    restart: unless-stopped
-
-networks:
-  csai-python-network-dev:
-    driver: bridge
-
-volumes:
-  postgres_data_dev:
