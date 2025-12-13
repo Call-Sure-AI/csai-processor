@@ -1,8 +1,8 @@
-name: Deploy to AWS EC2
+name: Deploy Dev to AWS EC2
 
 on:
   push:
-    branches: [ main ]
+    branches: [ dev ]
 
 jobs:
   deploy:
@@ -18,5 +18,7 @@ jobs:
         username: ${{ secrets.EC2_USERNAME }}
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
-          cd /home/ubuntu/csai-processor
-          ~/deploy.sh
+          cd /home/ubuntu/csai-processor-dev
+          git pull origin dev
+          docker-compose -f docker-compose.dev.yml down
+          docker-compose -f docker-compose.dev.yml up -d --build
