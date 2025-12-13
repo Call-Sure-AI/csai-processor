@@ -1,0 +1,25 @@
+services:
+  csai-python-app:
+    container_name: csai-python-app-dev
+    ports:
+      - "8002:8001"
+    env_file:
+      - .env.dev
+    networks:
+      - csai-python-network-dev
+
+  redis:
+    container_name: csai-redis-dev
+    ports:
+      - "6380:6379"
+    networks:
+      - csai-python-network-dev
+
+  postgres:
+    container_name: csai-postgres-dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    networks:
+      - csai-python-network-dev
