@@ -19,7 +19,7 @@ from routes.exotel_elevenlabs_routes import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/calls", tags=["unified-calls"])
+router = APIRouter()
 
 
 @router.post("/incoming")
