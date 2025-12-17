@@ -205,22 +205,31 @@ class ExotelProvider:
         """Handle Exotel media stream messages"""
         try:
             while True:
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
-                data = json.loads(message)
-                event = data.get("event")
-                
-                if event == "media":
-                    payload = data.get("media", {}).get("payload")
-                    if payload:
-                        audio = await self.convert_audio_payload(payload)
-                        if audio:
-                            await deepgram_service.process_audio_chunk(session_id, audio)
-                
-                elif event == "stop":
-                    logger.info(f"STREAM STOPPED")
-                    break
+                try:
+                    message = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
+                    data = json.loads(message)
+                    event = data.get("event")
                     
-        except asyncio.TimeoutError:
-            pass
+                    if event == "connected":
+                        logger.debug("📡 Exotel connected event")
+                    
+                    elif event == "media":
+                        payload = data.get("media", {}).get("payload")
+                        if payload:
+                            # Convert audio (no session_id here)
+                            audio = await self.convert_audio_payload(payload)
+                            if audio:
+                                await deepgram_service.process_audio_chunk(session_id, audio)
+                    
+                    elif event == "stop":
+                        logger.info(f"STREAM STOPPED")
+                        break
+                        
+                except asyncio.TimeoutError:
+                    continue
+                    
+        except WebSocketDisconnect:
+            logger.info("WebSocket disconnected")
         except Exception as e:
             logger.error(f"Media stream error: {e}")
+
