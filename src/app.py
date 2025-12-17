@@ -16,6 +16,7 @@ from services.rag.rag_service import RAGService
 from routes.s3 import router as s3_router
 from routes.document_routes import router as document_router
 from routes.twilio_elevenlabs_routes import router as twilio_elevenlabs_router
+from routes.call_routes import router as call_router
 
 # Configure logging
 logging.basicConfig(
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(twilio_elevenlabs_router, tags=["Elevenlabs-Twilio"])
     app.include_router(document_router, prefix="/api/v1/documents", tags=["documents"])
     app.include_router(s3_router, prefix="/api/v1/s3", tags=["S3"])
+    app.include_router(call_router, prefix="/api/v1/calls", tags=["calls"])
 
     # Statistics endpoint
     @app.get("/stats")
