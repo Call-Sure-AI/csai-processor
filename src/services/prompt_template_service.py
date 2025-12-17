@@ -338,8 +338,6 @@ GUARDRAILS - STRICT RULES YOU MUST FOLLOW:
     ) -> str:
         """Generate appropriate response based on urgency and sentiment"""
         
-        ai_name = self._extract_name_from_prompt(agent.get('prompt', ''))
-        
         if urgency == 'high':
             if any(kw in ['lost', 'stolen', 'fraud'] for kw in keywords):
                 return (
