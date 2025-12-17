@@ -3,6 +3,7 @@ from fastapi.responses import Response
 from services.telephony import get_telephony_provider
 from config.settings import settings
 import logging
+import asyncio
 
 # Import shared resources from your working Twilio routes
 from routes.twilio_elevenlabs_routes import (
@@ -12,13 +13,19 @@ from routes.twilio_elevenlabs_routes import (
     get_cached_agent,
     prewarm_agent_cache,
     save_to_db_background,
-    stream_elevenlabs_audio_optimized,
-    process_and_respond_incoming,
-    process_and_respond_outbound
+    stream_elevenlabs_audio_optimized
+)
+
+# Also need these global variables
+from routes.twilio_elevenlabs_routes import (
+    from_number_global,
+    to_number_global,
+    AGENT_CACHE_TTL
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/calls", tags=["unified-calls"])
+router = APIRouter()
+
 
 # Global variables (shared with twilio_elevenlabs_routes)
 from_number_global = None
