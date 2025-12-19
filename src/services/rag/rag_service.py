@@ -91,7 +91,6 @@ class RAGService:
                     if objection_match:
                         objection_type = objection_match.group(1)
 
-
         if call_type == "outgoing":
             sales_instructions = f"""
 **OUTBOUND SALES CALL - SPECIAL INSTRUCTIONS**:
