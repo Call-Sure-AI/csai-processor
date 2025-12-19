@@ -9,13 +9,15 @@ import logging
 from routes.twilio_elevenlabs_routes import (
     handle_incoming_call_elevenlabs as twilio_incoming_handler,
     handle_media_stream as twilio_media_stream_handler,
-    handle_call_status as twilio_status_handler
+    handle_call_status as twilio_status_handler,
+    initiate_outbound_call as twilio_outbound_handler
 )
 
 from routes.exotel_elevenlabs_routes import (
     handle_incoming_call_exotel as exotel_incoming_handler,
     handle_media_stream_exotel as exotel_media_stream_handler,
-    handle_call_status_exotel as exotel_status_handler
+    handle_call_status_exotel as exotel_status_handler,
+    initiate_outbound_call as exotel_outbound_handler
 )
 
 logger = logging.getLogger(__name__)
@@ -99,33 +101,19 @@ async def initiate_outbound_call_unified(
 ):
     """
     Unified outbound call initiation
-    Uses telephony provider abstraction
+    Calls provider-specific initiate_outbound_call() functions directly
     """
     try:
-        data = await request.json()
-        
         logger.info(f"Outbound call via {provider}")
-        logger.info(f"From: {data.get('from_number')} → To: {data.get('to_number')}")
-        
-        # Get provider instance
-        telephony = get_telephony_provider(provider)
-        
-        # Initiate call
-        result = await telephony.initiate_call(
-            from_number=data["from_number"],
-            to_number=data["to_number"],
-            webhook_url=data["webhook_url"],
-            status_callback_url=data.get("status_callback_url"),
-            record=data.get("record", False),
-            timeout=data.get("timeout", 60)
-        )
-        
-        logger.info(f"Call initiated: {result.get('call_sid')}")
-        return result
-        
-    except KeyError as e:
-        logger.error(f"Missing field: {e}")
-        return {"error": f"Missing required field: {str(e)}"}, 400
+
+        if provider == "twilio":
+            return await twilio_outbound_handler(request)
+        elif provider == "exotel":
+            return await exotel_outbound_handler(request)
+        else:
+            logger.error(f"Unknown provider: {provider}")
+            return {"error": f"Invalid provider: {provider}"}, 400
+            
     except Exception as e:
         logger.error(f"Outbound call failed: {e}")
         import traceback
