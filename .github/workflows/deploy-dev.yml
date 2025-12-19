@@ -20,5 +20,5 @@ jobs:
         script: |
           cd /home/ubuntu/csai-processor-dev
           git pull origin dev
-          docker-compose -f docker-compose.dev.yml down
-          docker-compose -f docker-compose.dev.yml up -d --build
+          docker compose -f docker-compose.dev.yml down
+          docker compose -f docker-compose.dev.yml up -d --build
