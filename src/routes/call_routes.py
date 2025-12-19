@@ -17,7 +17,7 @@ from routes.exotel_elevenlabs_routes import (
     handle_incoming_call_exotel as exotel_incoming_handler,
     handle_media_stream_exotel as exotel_media_stream_handler,
     handle_call_status_exotel as exotel_status_handler,
-    initiate_outbound_call as exotel_outbound_handler
+    initiate_outbound_call_exotel as exotel_outbound_handler
 )
 
 logger = logging.getLogger(__name__)
