@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = Field(default="21m00Tcm4TlvDq8ikWAM", env="ELEVENLABS_VOICE_ID")
     voice_id: Optional[str] = Field(default=None, env="VOICE_ID")
     
+    # Exotel
+    exotel_api_key: Optional[str] = Field(default=None, env="EXOTEL_API_KEY")
+    exotel_api_token: Optional[str] = Field(default=None, env="EXOTEL_TOKEN")
+    exotel_sid: Optional[str] = Field(default=None, env="EXOTEL_SID")
+    
     # Twilio
     twilio_account_sid: Optional[str] = Field(default=None, env="TWILIO_ACCOUNT_SID")
     twilio_auth_token: Optional[str] = Field(default=None, env="TWILIO_AUTH_TOKEN")
