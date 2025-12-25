@@ -121,6 +121,7 @@ class TwilioRecordingService:
 
         return result["url"]
 
+
     async def _update_call_record(
         self, call_sid: str, s3_url: str, duration: float
     ):
