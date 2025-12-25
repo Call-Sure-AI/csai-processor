@@ -39,6 +39,7 @@ from services.agent_tools import execute_function
 from services.intent_detection_service import intent_detection_service
 import uuid
 from services.slot_manager_service import SlotManagerService
+from services.twilio_recording_service import TwilioRecordingService
 
 twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
@@ -139,6 +140,11 @@ async def handle_incoming_call_elevenlabs(request: Request):
         response = VoiceResponse()
         connect = Connect()
         ws_domain = settings.base_url.replace('https://', '').replace('http://', '')
+        
+        response.record(
+            recording_status_callback=f"{settings.base_url}/twilio/recording-status",
+            recording_status_callback_event=["completed"]
+        )
 
         call_context[call_sid] = {
             "company_id": company_id,
@@ -1924,7 +1930,9 @@ async def initiate_outbound_call(request: Request):
             status_callback=f"{ws_domain}/api/v1/twilio-elevenlabs/call-status",
             status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
             status_callback_method='POST',
-            record=False,
+            record="record-from-answer",
+            recording_status_callback=f"{ws_domain}/api/v1/twilio-elevenlabs/twilio/recording-status",
+            recording_status_callback_method="POST",
             timeout=30,
             machine_detection='DetectMessageEnd',
             machine_detection_timeout=5
@@ -1970,3 +1978,38 @@ async def initiate_outbound_call(request: Request):
             "success": False,
             "error": str(e)
         }
+
+@router.post("/twilio/recording-status")
+async def handle_recording_status(request: Request):
+    """
+    Twilio RecordingStatusCallback webhook.
+    """
+    form = await request.form()
+
+    call_sid = form.get("CallSid")
+    recording_sid = form.get("RecordingSid")
+    recording_url = form.get("RecordingUrl")
+    recording_status = form.get("RecordingStatus")
+    duration = float(form.get("RecordingDuration", 0))
+
+    logger.info(
+        "Recording callback | call_sid=%s status=%s",
+        call_sid,
+        recording_status,
+    )
+
+    if recording_status != "completed":
+        return {"status": "ignored"}
+
+    service = TwilioRecordingService()
+
+    asyncio.create_task(
+        service.process_recording(
+            call_sid=call_sid,
+            recording_sid=recording_sid,
+            recording_url=recording_url,
+            duration=duration,
+        )
+    )
+
+    return {"status": "accepted"}
