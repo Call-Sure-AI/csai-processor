@@ -84,7 +84,6 @@ async def _prewarm_agent_cache(company_id: str, agent_id: str):
     except Exception as e:
         logger.error(f"Pre-warm failed: {e}")
 
-
 def save_to_db_background(call_sid: str, role: str, content: str):
     """Fire-and-forget DB write - saves ~100-300ms"""
     async def _save():
