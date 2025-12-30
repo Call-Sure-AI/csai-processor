@@ -108,7 +108,6 @@ def save_to_db_background(call_sid: str, role: str, content: str):
     
     asyncio.create_task(_save())
 
-
 @router.post("/incoming-call")
 async def handle_incoming_call_elevenlabs(request: Request):
     """Incoming call handler with ElevenLabs via WebSocket"""
