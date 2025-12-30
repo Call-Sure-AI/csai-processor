@@ -1851,8 +1851,6 @@ async def handle_outbound_stream(websocket: WebSocket):
                     call_record.transcription = s3_urls.get('transcript_url')
                     call_record.duration = call_duration
                     call_record.status = 'completed'
-                    if not call_record.campaign_id:
-                        call_record.campaign_id = context.get("campaign_id")
                     call_record.ended_at = datetime.utcnow()
                     db.commit()
             except:
@@ -1945,8 +1943,7 @@ async def initiate_outbound_call(request: Request):
                     to_number=to_number,
                     call_type=CallType.outgoing,
                     status='initiated',
-                    created_at=datetime.utcnow(),
-                    campaign_id=campaign_id
+                    created_at=datetime.utcnow()
                 )
                 db.add(new_call)
                 db.commit()
