@@ -1468,6 +1468,7 @@ async def handle_outbound_stream(websocket: WebSocket):
         'from_number': from_number_global,
         'to_number': to_number_global,
         'company_id': company_id,
+        'campaign_id': campaign_id,
         'call_type': call_type
     }
     
@@ -1850,6 +1851,8 @@ async def handle_outbound_stream(websocket: WebSocket):
                     call_record.transcription = s3_urls.get('transcript_url')
                     call_record.duration = call_duration
                     call_record.status = 'completed'
+                    if not call_record.campaign_id:
+                        call_record.campaign_id = context.get("campaign_id")
                     call_record.ended_at = datetime.utcnow()
                     db.commit()
             except:
@@ -1941,9 +1944,9 @@ async def initiate_outbound_call(request: Request):
                     from_number=from_number,
                     to_number=to_number,
                     call_type=CallType.outgoing,
-                    campaign_id=campaign_id,
                     status='initiated',
-                    created_at=datetime.utcnow()
+                    created_at=datetime.utcnow(),
+                    campaign_id=campaign_id
                 )
                 db.add(new_call)
                 db.commit()
@@ -1960,6 +1963,7 @@ async def initiate_outbound_call(request: Request):
             "success": True,
             "call_sid": call.sid,
             "to_number": to_number,
+            "campaign_id": campaign_id,
             "status": call.status
         }
         

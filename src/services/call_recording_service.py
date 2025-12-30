@@ -27,6 +27,7 @@ class CallRecordingService:
         
     async def save_call_data(
         self,
+        campaign_id: str,
         call_sid: str,
         company_id: str,
         agent_id: str,
