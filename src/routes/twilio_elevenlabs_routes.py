@@ -1876,7 +1876,7 @@ async def initiate_outbound_call(request: Request):
         customer_name = data.get("customer_name", "")
         company_id = data.get("company_id")
         agent_id = data.get("agent_id")
-        campaign_id = data.get("campaign_id", "")
+        campaign_id = data.get("campaign_id")
         from_number = data.get("from_number", settings.twilio_phone_number)
         
         if not to_number or not company_id or not agent_id:
@@ -1941,6 +1941,7 @@ async def initiate_outbound_call(request: Request):
                     from_number=from_number,
                     to_number=to_number,
                     call_type=CallType.outgoing,
+                    campaign_id=campaign_id,
                     status='initiated',
                     created_at=datetime.utcnow()
                 )
