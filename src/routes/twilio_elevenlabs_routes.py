@@ -80,7 +80,7 @@ async def _prewarm_agent_cache(company_id: str, agent_id: str):
             'company_name': company_name,
             'cached_at': datetime.utcnow()
         }
-        logger.info(f"✅ Pre-warmed agent cache: {cache_key}")
+        logger.info(f"Pre-warmed agent cache: {cache_key}")
     except Exception as e:
         logger.error(f"Pre-warm failed: {e}")
 
